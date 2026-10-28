@@ -403,8 +403,12 @@ final class StitchModel {
     var progress = 0.0
     var notice: String?
     var isDropTargeted = false
+    var watchFolder: URL?
 
     private var probing: Set<URL> = []
+    @ObservationIgnored private var watchTimer: Timer?
+    @ObservationIgnored private var seenFiles: Set<URL> = []
+    @ObservationIgnored private var pendingSizes: [URL: Int] = [:]
     @ObservationIgnored private var run: FFmpegRun?
     @ObservationIgnored private var job: EncodeJob?
     @ObservationIgnored private var startedAt = Date()
@@ -412,6 +416,7 @@ final class StitchModel {
     @ObservationIgnored private var activity: NSObjectProtocol?
 
     var isProbing: Bool { !probing.isEmpty }
+    var isWatching: Bool { watchFolder != nil }
     var isEncoding: Bool { state == .encoding }
     var totalDuration: Double { clips.reduce(0) { $0 + $1.duration } }
     var totalBytes: Int64 { clips.reduce(0) { $0 + $1.fileSize } }
@@ -464,6 +469,75 @@ final class StitchModel {
             }
             sortByDate()
             notice = skipped.isEmpty ? nil : "Skipped (not a readable video): \(skipped.sorted().joined(separator: ", "))"
+        }
+    }
+
+    func startWatching(in folder: URL = StitchModel.screenshotFolder()) {
+        stopWatching()
+        seenFiles = Set(Self.movies(in: folder).map(\.url))
+        pendingSizes = [:]
+        watchFolder = folder
+        watchTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkWatchFolder() }
+        }
+    }
+
+    func stopWatching() {
+        watchTimer?.invalidate()
+        watchTimer = nil
+        watchFolder = nil
+    }
+
+    func chooseWatchFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.directoryURL = watchFolder
+        panel.message = "Choose the folder your screen recordings are saved to"
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        startWatching(in: folder)
+    }
+
+    // A file is added once its size stops changing, so recordings still being written are skipped until finished.
+    private func checkWatchFolder() {
+        guard let folder = watchFolder, !isEncoding else { return }
+        var ready: [URL] = []
+        for (url, size) in Self.movies(in: folder) where !seenFiles.contains(url) {
+            if size > 0, pendingSizes[url] == size {
+                seenFiles.insert(url)
+                pendingSizes[url] = nil
+                ready.append(url)
+            } else {
+                pendingSizes[url] = size
+            }
+        }
+        if !ready.isEmpty {
+            add(ready)
+        }
+    }
+
+    nonisolated static func screenshotFolder() -> URL {
+        if let path = UserDefaults(suiteName: "com.apple.screencapture")?.string(forKey: "location"), !path.isEmpty {
+            let folder = URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+            if FileManager.default.fileExists(atPath: folder.path) {
+                return folder
+            }
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
+    }
+
+    private nonisolated static func movies(in folder: URL) -> [(url: URL, size: Int)] {
+        let keys: Set<URLResourceKey> = [.contentTypeKey, .fileSizeKey]
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return urls.compactMap { url in
+            guard let values = try? url.resourceValues(forKeys: keys), values.contentType?.conforms(to: .movie) == true else {
+                return nil
+            }
+            return (url.standardizedFileURL, values.fileSize ?? 0)
         }
     }
 
@@ -520,6 +594,8 @@ final class StitchModel {
         }
         self.run = run
         self.job = job
+        // Standardizing only strips /private from paths that exist, so do it on the folder.
+        seenFiles.insert(output.deletingLastPathComponent().standardizedFileURL.appendingPathComponent(output.lastPathComponent))
         cancelled = false
         progress = 0
         startedAt = Date()
@@ -586,6 +662,14 @@ struct ContentView: View {
                 } description: {
                     Text("Screen Stitch uses ffmpeg to join and compress videos. Install it with `brew install ffmpeg`, then reopen the app.")
                 }
+            } else if model.clips.isEmpty, let folder = model.watchFolder {
+                ContentUnavailableView {
+                    Label("Waiting for screen recordings", systemImage: "eye")
+                } description: {
+                    Text(verbatim: "Record with ⇧⌘5. New recordings saved to \(folder.lastPathComponent) show up here.")
+                } actions: {
+                    Button("Choose Videos…") { model.chooseFiles() }
+                }
             } else if model.clips.isEmpty {
                 ContentUnavailableView {
                     Label("Drop screen recordings here", systemImage: "film.stack")
@@ -593,12 +677,19 @@ struct ContentView: View {
                     Text("They're joined oldest to newest and compressed into one MP4.")
                 } actions: {
                     Button("Choose Videos…") { model.chooseFiles() }
+                    Button("Watch for New Recordings") { model.startWatching() }
                 }
             } else {
                 ClipList()
             }
-            Divider()
-            BottomBar()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+                BottomBar()
+            }
+            .background(.background)
         }
         .frame(minWidth: 700, minHeight: 420)
         .overlay {
@@ -626,6 +717,10 @@ struct ContentView: View {
         .toolbar {
             let locked = model.isEncoding || model.tools == nil
             ToolbarItemGroup {
+                Toggle(isOn: Binding(get: { model.isWatching }, set: { $0 ? model.startWatching() : model.stopWatching() })) {
+                    Label("Watch for Recordings", systemImage: "eye")
+                }
+                .help(model.isWatching ? "Stop watching for new recordings" : "Add new screen recordings as they're saved")
                 Button("Add Videos", systemImage: "plus") { model.chooseFiles() }
                     .help("Add videos")
                     .disabled(locked)
@@ -712,6 +807,18 @@ struct BottomBar: View {
         @Bindable var settings = model
         VStack(alignment: .leading, spacing: 12) {
             StatusView()
+            if let folder = model.watchFolder {
+                HStack(spacing: 6) {
+                    Image(systemName: "eye")
+                    Text(verbatim: "Adding new recordings from \(folder.lastPathComponent) as they're saved")
+                    Button("Change…") { model.chooseWatchFolder() }
+                        .buttonStyle(.link)
+                    Button("Stop") { model.stopWatching() }
+                        .buttonStyle(.link)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
             if let notice = model.notice {
                 Text(verbatim: notice)
                     .font(.caption)

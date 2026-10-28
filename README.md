@@ -9,6 +9,8 @@ Requires macOS 14+ on Apple Silicon and [FFmpeg](https://ffmpeg.org) (with [Home
 ## Use
 
 - Drop `.mov`/`.mp4` files on the window or on the Dock icon, or click **+**.
+- Or click the **eye** to watch the folder macOS saves screen recordings to (Desktop unless you changed it), and record
+  with ⇧⌘5: each new recording is added as soon as it's saved.
 - Clips are sorted by when they were recorded: the QuickTime `creationdate` tag, then `creation_time`, then the file's
   creation date. Drag rows to reorder; **⇅** re-sorts by date.
 - Pick **Size** and **Quality**, then **Combine & Compress…**, and choose where to save the result.
