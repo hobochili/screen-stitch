@@ -2,7 +2,9 @@
 
 A small macOS app that joins screen recordings in the order they were recorded and compresses them into one MP4.
 
-Requires macOS 14+ on Apple Silicon and Homebrew's `ffmpeg` (`brew install ffmpeg`).
+Requires macOS 14+ on Apple Silicon and [FFmpeg](https://ffmpeg.org) (with [Homebrew](https://brew.sh):
+`brew install ffmpeg`). The app looks for `ffmpeg` and `ffprobe` in `/opt/homebrew/bin`, `/usr/local/bin`,
+`/opt/local/bin` and `/usr/bin`.
 
 ## Use
 
