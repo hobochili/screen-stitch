@@ -24,8 +24,8 @@ app="build/Screen Stitch.app"
 rm -rf build
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" build/AppIcon.iconset
 
-swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macos15.0 \
-  ScreenStitch.swift -o "$app/Contents/MacOS/ScreenStitch"
+swiftc -O -wmo -swift-version 5 -parse-as-library -target arm64-apple-macos15.0 \
+  Sources/*/*.swift -o "$app/Contents/MacOS/ScreenStitch"
 cp Info.plist "$app/Contents/Info.plist"
 
 swiftc -O make-icon.swift -o build/make-icon

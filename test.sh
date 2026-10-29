@@ -16,9 +16,14 @@ fi
 
 mkdir -p build/tests
 # The app's entry point would clash with the test runner's.
-sed 's/^@main$//' ScreenStitch.swift > build/tests/App.swift
+entry=Sources/App/ScreenStitchApp.swift
+sed 's/^@main$//' "$entry" > build/tests/ScreenStitchApp.swift
+sources=()
+for file in Sources/*/*.swift; do
+  [[ "$file" == "$entry" ]] || sources+=("$file")
+done
 swiftc -swift-version 5 -parse-as-library -target arm64-apple-macos15.0 \
   -F "$frameworks" -L "$libraries" -plugin-path "$plugins" \
   -Xlinker -rpath -Xlinker "$frameworks" -Xlinker -rpath -Xlinker "$libraries" \
-  build/tests/App.swift Tests/*.swift -o build/tests/run
+  build/tests/ScreenStitchApp.swift "${sources[@]}" Tests/*.swift -o build/tests/run
 build/tests/run "$@"
