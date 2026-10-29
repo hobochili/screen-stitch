@@ -91,10 +91,20 @@ func makeVideo(_ url: URL, width: Int, height: Int, seconds: Double = 1, color: 
 
 // The non-black part of the frame at `time`, as FFmpeg's cropdetect reports it: "width:height:x:y".
 func visibleArea(of url: URL, at time: Double) throws -> String? {
+    try cropReadings(["-ss", String(time), "-i", url.path, "-frames:v", "3", "-vf", "cropdetect=limit=24:round=2:skip=0"])
+        .last
+}
+
+// The same for the clip's last frame. It reads every frame rather than seeking, since a still screen gives few frames
+// and a seek past the last one reads nothing.
+func lastVisibleArea(of url: URL) throws -> String? {
+    try cropReadings(["-i", url.path, "-vf", "cropdetect=limit=24:round=2:skip=0:reset=1"]).last
+}
+
+private func cropReadings(_ arguments: [String]) throws -> [String] {
     let process = Process()
     process.executableURL = tools!.ffmpeg
-    process.arguments = ["-v", "info", "-ss", String(time), "-i", url.path, "-frames:v", "3",
-                         "-vf", "cropdetect=limit=24:round=2:skip=0", "-f", "null", "-"]
+    process.arguments = ["-v", "info"] + arguments + ["-f", "null", "-"]
     let stderr = Pipe()
     process.standardError = stderr
     process.standardOutput = FileHandle.nullDevice
@@ -102,7 +112,7 @@ func visibleArea(of url: URL, at time: Double) throws -> String? {
     try process.run()
     let log = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     process.waitUntilExit()
-    return log.components(separatedBy: "crop=").last.flatMap { $0.split(whereSeparator: \.isNewline).first.map(String.init) }
+    return log.components(separatedBy: "crop=").dropFirst().compactMap { $0.split(whereSeparator: \.isNewline).first.map(String.init) }
 }
 
 struct VideoInfo {
@@ -146,12 +156,17 @@ func videoInfo(_ url: URL) throws -> VideoInfo {
     )
 }
 
-// Average luma (0–255) of the frame at `time`, from FFmpeg's signalstats.
+// Average luma (0–255) of the frame at `time`.
 func averageBrightness(of url: URL, at time: Double) throws -> Double {
+    try averageColor(of: url, at: time).y
+}
+
+// Average Y, U and V (0–255) of the frame at `time`, from FFmpeg's signalstats.
+func averageColor(of url: URL, at time: Double) throws -> (y: Double, u: Double, v: Double) {
     let process = Process()
     process.executableURL = tools!.ffmpeg
     process.arguments = ["-v", "info", "-ss", String(time), "-i", url.path, "-frames:v", "1",
-                         "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-f", "null", "-"]
+                         "-vf", "signalstats,metadata=print", "-f", "null", "-"]
     let stderr = Pipe()
     process.standardError = stderr
     process.standardOutput = FileHandle.nullDevice
@@ -159,7 +174,12 @@ func averageBrightness(of url: URL, at time: Double) throws -> Double {
     try process.run()
     let log = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     process.waitUntilExit()
-    guard log.contains("YAVG=") else { throw CommandError(description: "no brightness reading for \(url.lastPathComponent)") }
-    let value = log.components(separatedBy: "YAVG=").last.flatMap { $0.split(whereSeparator: \.isNewline).first }
-    return value.flatMap { Double($0) } ?? -1
+    func reading(_ key: String) throws -> Double {
+        let value = log.components(separatedBy: "signalstats.\(key)=").dropFirst().last?.split(whereSeparator: \.isNewline).first
+        guard let value, let number = Double(value) else {
+            throw CommandError(description: "no \(key) reading for \(url.lastPathComponent)")
+        }
+        return number
+    }
+    return try (reading("YAVG"), reading("UAVG"), reading("VAVG"))
 }
