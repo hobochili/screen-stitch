@@ -114,6 +114,11 @@ final class Recorder: NSObject, SCContentSharingPickerObserver, SCStreamDelegate
         let configuration = SCStreamConfiguration()
         configuration.width = Int(size.width * fit / 2) * 2
         configuration.height = Int(size.height * fit / 2) * 2
+        // A window that's closing or minimizing can have no size, and the writer can't take that.
+        guard configuration.width > 0, configuration.height > 0 else {
+            end(.failed("The window isn't on screen. Bring it back, or pick something else to record."))
+            return
+        }
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         configuration.showsCursor = true
         configuration.scalesToFit = true
