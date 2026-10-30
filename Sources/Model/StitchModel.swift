@@ -5,100 +5,6 @@ import Quartz
 import ScreenCaptureKit
 import SwiftUI
 
-enum RecordingState: Equatable {
-    case idle
-    case picking
-    case needsPermission
-    case systemPicker
-    case selectingArea
-    case ready(String)
-    case countdown(Int)
-    case starting
-    case recording(since: Date)
-}
-
-// What was last recorded, so Record can offer it again. Areas keep their display-relative rect for capture
-// and their global rect for the frame drawn around them.
-enum LastTarget {
-    case window(id: CGWindowID, pid: pid_t, title: String)
-    case display(id: CGDirectDisplayID, phrase: String)
-    case area(display: CGDirectDisplayID, rect: CGRect, onScreen: CGRect)
-
-    // How the target reads in a sentence, e.g. "Ready to record the entire screen".
-    var phrase: String {
-        switch self {
-        case let .window(_, _, title): "“\(title)”"
-        case let .display(_, phrase): phrase
-        case let .area(_, rect, _): "the \(Int(rect.width))×\(Int(rect.height)) area"
-        }
-    }
-}
-
-struct CaptureTarget: Identifiable {
-    enum Kind {
-        case display(SCDisplay)
-        case window(SCWindow)
-    }
-
-    let id: String
-    let kind: Kind
-    let title: String
-    let phrase: String
-    let subtitle: String
-    let icon: NSImage?
-    let offScreenReason: String?
-    var thumbnail: CGImage?
-
-    init(display: SCDisplay, number: Int, of count: Int) {
-        id = "display-\(display.displayID)"
-        kind = .display(display)
-        title = count == 1 ? "Entire Screen" : "Display \(number)"
-        phrase = count == 1 ? "the entire screen" : "Display \(number)"
-        subtitle = "\(Int(display.frame.width))×\(Int(display.frame.height))"
-        icon = NSImage(systemSymbolName: "display", accessibilityDescription: nil)
-        offScreenReason = nil
-    }
-
-    init(window: SCWindow) {
-        let app = window.owningApplication
-        id = "window-\(window.windowID)"
-        kind = .window(window)
-        title = window.title.flatMap { $0.isEmpty ? nil : $0 } ?? app?.applicationName ?? "Window"
-        phrase = "“\(title)”"
-        subtitle = app?.applicationName ?? ""
-        let running = app.flatMap { NSRunningApplication(processIdentifier: $0.processID) }
-        icon = running?.icon
-        offScreenReason = window.isOnScreen ? nil : running?.isHidden == true ? "App is hidden" : "Minimized or on another desktop"
-    }
-
-    var isDisplay: Bool {
-        if case .display = kind { true } else { false }
-    }
-
-    func filter(excluding ours: [SCRunningApplication]) -> SCContentFilter {
-        switch kind {
-        case let .display(display):
-            SCContentFilter(display: display, excludingApplications: ours, exceptingWindows: [])
-        case let .window(window):
-            SCContentFilter(desktopIndependentWindow: window)
-        }
-    }
-
-    func captureThumbnail(excluding ours: [SCRunningApplication]) async -> CGImage? {
-        guard offScreenReason == nil else { return nil }
-        let frame = switch kind {
-        case let .display(display): display.frame
-        case let .window(window): window.frame
-        }
-        let scale = 480 / max(frame.width, frame.height, 1)
-        let configuration = SCStreamConfiguration()
-        configuration.width = max(2, Int(frame.width * scale))
-        configuration.height = max(2, Int(frame.height * scale))
-        configuration.showsCursor = false
-        return try? await SCScreenshotManager.captureImage(contentFilter: filter(excluding: ours), configuration: configuration)
-    }
-}
-
 enum EncodeState: Equatable {
     case idle
     case encoding
@@ -112,12 +18,20 @@ final class StitchModel {
     // Where settings are kept. Tests point this at a throwaway domain.
     nonisolated(unsafe) static var defaults = UserDefaults.standard
     let tools = Tools.locate()
+    // Picking what to record, and recording it.
+    @ObservationIgnored private(set) var recording: RecordingFlow!
+
+    // Tests pass stand-ins for ScreenCaptureKit and the screen.
+    init(capture: CaptureSource? = nil, overlays: RecordingOverlays? = nil) {
+        recording = RecordingFlow(model: self, source: capture ?? LiveCaptureSource(),
+                                  overlays: overlays ?? LiveRecordingOverlays(model: self))
+    }
     // The session is the list of clips and title cards, and the video made from them. The last target only matters
     // while recording a series, so a session without clips forgets it.
     var items: [SessionItem] = [] {
         didSet {
             if clips.isEmpty {
-                lastTarget = nil
+                recording.lastTarget = nil
             }
             selection.formIntersection(items.map(\.id))
             if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
@@ -168,21 +82,6 @@ final class StitchModel {
     var warning: String?
     var isDropTargeted = false
     var watchFolder: URL?
-    var recordingState: RecordingState = .idle {
-        didSet {
-            if recordingState != oldValue {
-                DispatchQueue.main.async { [weak self] in self?.controls?.refresh() }
-                updateEscapeKey()
-                placePill()
-            }
-        }
-    }
-    var targets: [CaptureTarget] = []
-    var hoveredTarget: String?
-    var lastTarget: LastTarget?
-    var readyNote: String? {
-        didSet { DispatchQueue.main.async { [weak self] in self?.controls?.refresh() } }
-    }
     var thumbnails: [UUID: NSImage] = [:]
     var showsSlate = StitchModel.defaults.object(forKey: "showsSlate") as? Bool ?? true {
         didSet { StitchModel.defaults.set(showsSlate, forKey: "showsSlate") }
@@ -213,11 +112,6 @@ final class StitchModel {
     var shortcutClashesWithMacOS = false
     @ObservationIgnored private var shortcutMonitor: Any?
     @ObservationIgnored private let hotKeys = GlobalHotKeys(signature: 0x5353_5448)
-    @ObservationIgnored private let escapeKey = GlobalHotKeys(signature: 0x5353_4543)
-    @ObservationIgnored private var windowVisibility = TargetFrame.Visibility.visible
-    @ObservationIgnored private var showsWindowNote = false
-    @ObservationIgnored private var askedForAccessibility = false
-    var isWindowCovered = false
     var outputThumbnail: NSImage?
     // Set while Quick Look shows the saved video rather than the selected clips.
     @ObservationIgnored private var quickLookOutput: URL?
@@ -230,20 +124,6 @@ final class StitchModel {
     }
 
     private var probing: Set<URL> = []
-    @ObservationIgnored private var recorder: Recorder?
-    @ObservationIgnored private var controls: RecordingControls?
-    @ObservationIgnored private var ourApps: [SCRunningApplication] = []
-    @ObservationIgnored private var displays: [SCDisplay] = []
-    @ObservationIgnored private var areaSelector: AreaSelector?
-    @ObservationIgnored private var areaEditor: AreaEditor?
-    @ObservationIgnored private var pill: TargetPill?
-    @ObservationIgnored private var slate: Slate?
-    @ObservationIgnored private var targetFrame: TargetFrame?
-    @ObservationIgnored private var countdownOverlay: CountdownOverlay?
-    @ObservationIgnored private var countdownTimer: Timer?
-    @ObservationIgnored private var pendingFilter: SCContentFilter?
-    @ObservationIgnored private var pendingArea: CGRect?
-    @ObservationIgnored private var pendingTarget: LastTarget?
     private var isManuallyOrdered = false
     @ObservationIgnored private var watchTimer: Timer?
     @ObservationIgnored private var seenFiles: Set<URL> = []
@@ -253,19 +133,11 @@ final class StitchModel {
     @ObservationIgnored private var startedAt = Date()
     @ObservationIgnored private var cancelled = false
     @ObservationIgnored private var activity: NSObjectProtocol?
-    @ObservationIgnored private var recordingActivity: NSObjectProtocol?
-    @ObservationIgnored private var quitWhenRecordingEnds: (() -> Void)?
-
     var isProbing: Bool { !probing.isEmpty }
     var isWatching: Bool { watchFolder != nil }
-    var isRecording: Bool { recordingState != .idle }
     var hasBottomBar: Bool {
-        !clips.isEmpty || isWatching || warning != nil || notice != nil || state != .idle || isCapturing
+        !clips.isEmpty || isWatching || warning != nil || notice != nil || state != .idle || recording.isCapturing
     }
-    var isCapturing: Bool {
-        if case .recording = recordingState { true } else { false }
-    }
-
     nonisolated static let defaultRecordingsFolder = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Movies/Screen Stitch", isDirectory: true)
 
@@ -338,518 +210,9 @@ final class StitchModel {
         }
     }
 
-    func toggleRecording() {
-        switch recordingState {
-        case .idle: startRecording()
-        case .recording: stopRecording()
-        default: break
-        }
-    }
-
-    // Record reuses the last window, display or area and goes straight to the floating bar, where Change… reopens
-    // the picker. Listing windows needs Screen Recording permission; without it the user can grant it or fall back
-    // to the macOS picker, which doesn't.
-    func startRecording() {
-        beginRecordingFlow(reusingLast: true)
-    }
-
-    func pickTarget() {
-        beginRecordingFlow(reusingLast: false)
-    }
-
-    private func beginRecordingFlow(reusingLast: Bool) {
-        guard recordingState == .idle, !isEncoding else { return }
-        warning = nil
-        do {
-            try FileManager.default.createDirectory(at: recordingsFolder, withIntermediateDirectories: true)
-        } catch {
-            warning = "Couldn't create \(displayPath(recordingsFolder)): \(error.localizedDescription)"
-            return
-        }
-        guard CGPreflightScreenCaptureAccess() else {
-            CGRequestScreenCaptureAccess()
-            recordingState = .needsPermission
-            return
-        }
-        if reusingLast, !clips.isEmpty, let lastTarget {
-            recordingState = .starting
-            Task { await getReadyAgain(lastTarget) }
-        } else {
-            showPicker()
-        }
-    }
-
-    private func showPicker() {
-        targets = []
-        recordingState = .picking
-        Task { await loadTargets() }
-    }
-
-    private func fetchContent() async -> SCShareableContent? {
-        guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false) else {
-            return nil
-        }
-        ourApps = content.applications.filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }
-        displays = content.displays
-        return content
-    }
-
-    private func loadTargets() async {
-        guard let content = await fetchContent() else {
-            recordingState = .needsPermission
-            return
-        }
-        let bundleID = Bundle.main.bundleIdentifier
-        let displays = content.displays.enumerated().map { index, display in
-            CaptureTarget(display: display, number: index + 1, of: content.displays.count)
-        }
-        let windows = content.windows
-            .filter { window in
-                guard window.windowLayer == 0, window.frame.width >= 120, window.frame.height >= 80,
-                      let app = window.owningApplication, app.bundleIdentifier != bundleID else { return false }
-                if window.isOnScreen {
-                    return true
-                }
-                // Off-screen windows include plenty of invisible helpers; keep titled windows of regular apps.
-                guard let title = window.title, !title.isEmpty else { return false }
-                return NSRunningApplication(processIdentifier: app.processID)?.activationPolicy == .regular
-            }
-            .map(CaptureTarget.init(window:))
-            .sorted { ($0.subtitle.lowercased(), $0.title) < ($1.subtitle.lowercased(), $1.title) }
-        guard recordingState == .picking else { return }
-        targets = displays + windows
-
-        let ours = ourApps
-        await withTaskGroup(of: (String, CGImage?).self) { group in
-            for target in targets {
-                group.addTask { (target.id, await target.captureThumbnail(excluding: ours)) }
-            }
-            for await (id, image) in group {
-                if let index = targets.firstIndex(where: { $0.id == id }) {
-                    targets[index].thumbnail = image
-                }
-            }
-        }
-    }
-
-    private func getReadyAgain(_ last: LastTarget) async {
-        guard let content = await fetchContent() else {
-            recordingState = .needsPermission
-            return
-        }
-        guard recordingState == .starting else { return }
-        switch last {
-        case let .window(id, pid, _):
-            if let window = content.windows.first(where: { $0.windowID == id }) {
-                let filter = SCContentFilter(desktopIndependentWindow: window)
-                getReady(filter, area: nil, remembering: last, bringingForward: NSRunningApplication(processIdentifier: pid))
-                return
-            }
-        case let .display(id, _):
-            if let display = content.displays.first(where: { $0.displayID == id }) {
-                let filter = SCContentFilter(display: display, excludingApplications: ourApps, exceptingWindows: [])
-                getReady(filter, area: nil, remembering: last, bringingForward: nil)
-                return
-            }
-        case let .area(id, rect, _):
-            if let display = content.displays.first(where: { $0.displayID == id }) {
-                let filter = SCContentFilter(display: display, excludingApplications: ourApps, exceptingWindows: [])
-                getReady(filter, area: rect, remembering: last, bringingForward: nil)
-                return
-            }
-        }
-        lastTarget = nil
-        warning = "Couldn't find \(last.phrase) anymore. Pick something else to record."
-        showPicker()
-    }
-
-    func record(_ target: CaptureTarget) {
-        guard recordingState == .picking else { return }
-        switch target.kind {
-        case let .window(window):
-            let pid = window.owningApplication?.processID ?? 0
-            if target.offScreenReason != nil {
-                restore(NSRunningApplication(processIdentifier: pid))
-            }
-            getReady(
-                target.filter(excluding: ourApps),
-                area: nil,
-                remembering: .window(id: window.windowID, pid: pid, title: target.title),
-                bringingForward: NSRunningApplication(processIdentifier: pid)
-            )
-        case let .display(display):
-            getReady(target.filter(excluding: ourApps), area: nil, remembering: .display(id: display.displayID, phrase: target.phrase), bringingForward: nil)
-        }
-    }
-
-    // The main window steps aside while picking so the area under it can be selected; Esc puts it back.
-    func selectArea() {
-        guard recordingState == .picking else { return }
-        recordingState = .selectingArea
-        mainWindow?.orderOut(nil)
-        areaSelector = AreaSelector { [weak self] result in
-            MainActor.assumeIsolated { self?.areaSelected(result) }
-        }
-    }
-
-    private func areaSelected(_ result: (screen: NSScreen, rect: CGRect)?) {
-        areaSelector = nil
-        let id = result?.screen.displayID
-        guard let result, let id, let display = displays.first(where: { $0.displayID == id }) else {
-            endRecording()
-            return
-        }
-        let rect = result.rect
-        let screen = result.screen.frame
-        let onScreen = rect.offsetBy(dx: screen.minX, dy: screen.minY)
-        let area = CGRect(x: rect.minX, y: screen.height - rect.maxY, width: rect.width, height: rect.height)
-        let filter = SCContentFilter(display: display, excludingApplications: ourApps, exceptingWindows: [])
-        getReady(filter, area: area, remembering: .area(display: id, rect: area, onScreen: onScreen), bringingForward: nil)
-    }
-
-    static let log = Logger(subsystem: "local.screen-stitch", category: "focus")
-
-    // macOS refuses the usual hand-off when Screen Stitch isn't the active app (a shortcut pressed in another app), and
-    // a background-style app like Problem Reporter can become active without its window coming forward. Opening the
-    // app, as a Dock click does, works in both cases. It can also open a new window in some apps, so it's only the
-    // fallback, when the app isn't active or another app's window still covers the picked one.
-    static func bringForward(_ app: NSRunningApplication, window: CGWindowID? = nil) {
-        app.activate(from: .current, options: [.activateAllWindows])
-        // Background-style apps report being active even when their window stays behind, so they're always opened. A
-        // second look catches a window that came forward and then fell back.
-        for (delay, first) in [(0.3, true), (1.2, false)] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                let covered = window.map { TargetFrame.isCovered(window: $0, ignoring: app.processIdentifier) } ?? false
-                let background = app.activationPolicy == .accessory
-                let name = app.localizedName ?? "app"
-                log.notice("Bringing \(name, privacy: .public) forward after \(delay, privacy: .public)s: active \(app.isActive, privacy: .public), covered by another app \(covered, privacy: .public), background-style \(background, privacy: .public)")
-                guard !app.isActive || covered || (first && background), let url = app.bundleURL else { return }
-                let configuration = NSWorkspace.OpenConfiguration()
-                configuration.activates = true
-                NSWorkspace.shared.openApplication(at: url, configuration: configuration)
-            }
-        }
-    }
-
-    // Unhides the app and sends it the reopen event a Dock click sends, which restores a minimized window when the
-    // app has no other windows open. Anything else is up to the user, and the floating bar says so.
-    private func restore(_ app: NSRunningApplication?) {
-        guard let app else { return }
-        app.unhide()
-        if let url = app.bundleURL {
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.activates = true
-            NSWorkspace.shared.openApplication(at: url, configuration: configuration)
-        }
-    }
-
-    // Shows the floating bar with Start so the user can set things up first, and hands focus to the window
-    // they picked.
-    private func getReady(_ filter: SCContentFilter, area: CGRect?, remembering target: LastTarget, bringingForward app: NSRunningApplication?) {
-        pendingFilter = filter
-        pendingArea = area
-        pendingTarget = target
-        readyNote = nil
-        recordingState = .ready(target.phrase)
-        controls = RecordingControls(model: self, on: targetScreen)
-        // The app is hidden while the bar is up, and App Nap would throttle the frame's tracking to about once a second.
-        if recordingActivity == nil {
-            recordingActivity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical], reason: "Recording")
-        }
-        showsWindowNote = false
-        isWindowCovered = false
-        targetFrame?.remove()
-        targetFrame = nil
-        areaEditor?.remove()
-        areaEditor = nil
-        if case .area = target {
-            editArea()
-        } else {
-            targetFrame = frame(for: target)
-        }
-        placePill()
-        if let app {
-            NSApp.yieldActivation(to: app)
-        }
-        NSApp.hide(nil)
-        let window: CGWindowID? = if case let .window(id, _, _) = target { id } else { nil }
-        if let app {
-            Self.bringForward(app, window: window)
-        }
-        // Activating an app reorders its windows, so the one picked is raised once the app is in front.
-        if case let .window(id, pid, _) = target {
-            let trusted = AXIsProcessTrusted()
-            Self.log.notice("Accessibility \(trusted ? "allowed" : "not allowed", privacy: .public)")
-            if trusted {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    let raised = TargetFrame.raise(window: id, pid: pid)
-                    Self.log.notice("Raised the picked window: \(raised, privacy: .public)")
-                }
-            }
-        }
-        // Notes wait until the app has had a moment to come forward.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.showsWindowNote = true
-            self?.updateWindowNote()
-        }
-    }
-
-    // Raising one particular window of another app needs Accessibility permission, which Bring to Front asks for.
-    private func updateWindowNote() {
-        guard showsWindowNote, case .ready = recordingState, case let .window(_, pid, _)? = pendingTarget else { return }
-        isWindowCovered = windowVisibility == .covered
-        readyNote = switch windowVisibility {
-        case .visible: nil
-        case .covered where askedForAccessibility && !AXIsProcessTrusted():
-            "Turn on Screen Stitch in the System Settings page that opened, then click Bring to Front again."
-        case .covered: "Another window is in front of it. You can still click Start."
-        case .offScreen: offScreenNote(pid: pid)
-        }
-    }
-
-    // Without permission, it opens the settings page every time: macOS shows its own prompt only the first time an app
-    // ever asks. The request still goes in first, since that's what lists Screen Stitch on the page.
-    func bringWindowToFront() {
-        guard case let .window(id, pid, _)? = pendingTarget else { return }
-        guard AXIsProcessTrusted() else {
-            askedForAccessibility = true
-            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                NSWorkspace.shared.open(url)
-            }
-            updateWindowNote()
-            return
-        }
-        TargetFrame.raise(window: id, pid: pid)
-    }
-
-    private func frame(for target: LastTarget) -> TargetFrame? {
-        switch target {
-        case let .window(id, _, _):
-            let frame = TargetFrame(.window(id))
-            frame.onVisibilityChange = { [weak self] visibility in
-                self?.windowVisibility = visibility
-                self?.updateWindowNote()
-            }
-            frame.onMove = { [weak self] in
-                self?.placePill()
-            }
-            frame.onResize = { [weak self] size in
-                guard let self else { return }
-                switch recordingState {
-                case .starting, .recording: recorder?.fit(windowSize: size)
-                default: break
-                }
-            }
-            return frame
-        case let .display(id, _):
-            return NSScreen.screens.first { $0.displayID == id }.map { TargetFrame(.display($0.frame)) }
-        case let .area(_, _, onScreen):
-            return TargetFrame(.area(onScreen))
-        }
-    }
-
-    // Start (or Stop) by what's being recorded. A window gets it only when there's room below it; a display never does;
-    // an area's Start comes with its editor, and its Stop goes below it or just inside.
-    private func placePill() {
-        let mode: TargetPill.Mode
-        switch recordingState {
-        case .ready: mode = .ready(size: nil)
-        case let .recording(since): mode = .recording(since: since)
-        default:
-            pill?.hide()
-            return
-        }
-        var place: (target: CGRect, screen: CGRect, insideIfNeeded: Bool)?
-        switch pendingTarget {
-        case .window?:
-            if let frame = targetFrame?.windowBounds,
-               let screen = NSScreen.screens.first(where: { $0.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) }) {
-                place = (frame, screen.visibleFrame, false)
-            }
-        case let .area(id, _, onScreen)?:
-            if case .recording = mode, let screen = NSScreen.screens.first(where: { $0.displayID == id }) {
-                place = (onScreen, screen.frame, true)
-            }
-        default:
-            break
-        }
-        guard let place else {
-            pill?.hide()
-            return
-        }
-        if pill == nil {
-            pill = TargetPill(start: { [weak self] in self?.beginRecording() }, stop: { [weak self] in self?.stopRecording() })
-        }
-        pill?.show(mode, below: place.target, within: place.screen, insideIfNeeded: place.insideIfNeeded)
-    }
-
-    // Until Start, the area can be moved and resized; then it locks into the plain frame clicks pass through.
-    private func editArea() {
-        guard case let .area(id, _, onScreen)? = pendingTarget,
-              let screen = NSScreen.screens.first(where: { $0.displayID == id }) else { return }
-        targetFrame?.remove()
-        targetFrame = nil
-        areaEditor = AreaEditor(rect: onScreen, within: screen.frame, onChange: { [weak self] rect in
-            self?.areaMoved(to: rect, on: screen)
-        }, onStart: { [weak self] in
-            self?.beginRecording()
-        })
-    }
-
-    private func lockArea() {
-        guard let areaEditor, case let .area(_, _, onScreen)? = pendingTarget else { return }
-        areaEditor.remove()
-        self.areaEditor = nil
-        targetFrame = TargetFrame(.area(onScreen))
-    }
-
-    private func areaMoved(to onScreen: CGRect, on screen: NSScreen) {
-        guard case .ready = recordingState, case let .area(id, _, _)? = pendingTarget else { return }
-        let frame = screen.frame
-        let area = CGRect(x: onScreen.minX - frame.minX, y: frame.maxY - onScreen.maxY, width: onScreen.width, height: onScreen.height)
-        let target = LastTarget.area(display: id, rect: area, onScreen: onScreen)
-        pendingArea = area
-        pendingTarget = target
-        recordingState = .ready(target.phrase)
-    }
-
-    private func showSlate() {
-        guard showsSlate, let target = pendingTarget else { return }
-        let rect: CGRect? = switch target {
-        case let .window(id, _, _): TargetFrame.frame(ofWindow: id)
-        case let .display(id, _): NSScreen.screens.first { $0.displayID == id }?.frame
-        case let .area(_, _, onScreen): onScreen
-        }
-        guard let rect else { return }
-        slate = Slate(over: rect, clipNumber: clips.count + 1)
-    }
-
-    // The display what's being recorded is on: the floating bar and the countdown go there.
-    private var targetScreen: NSScreen? {
-        switch pendingTarget {
-        case let .display(id, _)?, let .area(id, _, _)?:
-            return NSScreen.screens.first { $0.displayID == id }
-        case let .window(id, _, _)?:
-            guard let frame = TargetFrame.frame(ofWindow: id) else { return NSScreen.main }
-            return NSScreen.screens.first { $0.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) } ?? NSScreen.main
-        case nil:
-            return NSScreen.main
-        }
-    }
-
-    // Optionally counts down 3-2-1 first, so it's obvious when recording starts; the count isn't recorded.
-    func beginRecording() {
-        guard case .ready = recordingState, pendingFilter != nil else { return }
-        if case let .window(id, pid, _)? = pendingTarget, TargetFrame.frame(ofWindow: id) == nil {
-            readyNote = offScreenNote(pid: pid)
-            return
-        }
-        readyNote = nil
-        isWindowCovered = false
-        lastTarget = pendingTarget
-        lockArea()
-        guard countsDownBeforeRecording else {
-            startCapture()
-            return
-        }
-        recordingState = .countdown(3)
-        if let screen = targetScreen {
-            countdownOverlay = CountdownOverlay(on: screen)
-            countdownOverlay?.show(3)
-        }
-        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.countDown() }
-        }
-    }
-
-    private func countDown() {
-        guard case let .countdown(remaining) = recordingState else {
-            stopCountdown()
-            return
-        }
-        if remaining > 1 {
-            recordingState = .countdown(remaining - 1)
-            countdownOverlay?.show(remaining - 1)
-            return
-        }
-        stopCountdown()
-        startCapture()
-    }
-
-    // A window's size is read again at Start: it may have been resized, or restored from the Dock, since it was picked.
-    private func startCapture() {
-        guard let filter = pendingFilter else { return }
-        recordingState = .starting
-        showSlate()
-        guard case let .window(id, _, _)? = pendingTarget else {
-            makeRecorder().record(filter, area: pendingArea)
-            return
-        }
-        Task {
-            let window = await fetchContent()?.windows.first { $0.windowID == id }
-            guard recordingState == .starting else { return }
-            makeRecorder().record(window.map { SCContentFilter(desktopIndependentWindow: $0) } ?? filter, area: nil)
-        }
-    }
-
-    func cancelCountdown() {
-        guard case .countdown = recordingState else { return }
-        stopCountdown()
-        recordingState = .ready(pendingTarget?.phrase ?? "")
-        if case .area? = pendingTarget {
-            editArea()
-        }
-        updateWindowNote()
-    }
-
-    private func stopCountdown() {
-        countdownTimer?.invalidate()
-        countdownTimer = nil
-        countdownOverlay?.remove()
-        countdownOverlay = nil
-    }
-
-    func cancelReady() {
-        guard case .ready = recordingState else { return }
-        endRecording()
-    }
-
-    func changeTarget() {
-        guard case .ready = recordingState else { return }
-        removeRecordingControls()
-        NSApp.unhide(nil)
-        mainWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate()
-        showPicker()
-    }
-
-    // Esc cancels from any app while getting ready. It's left alone while recording, where it may be part of what's
-    // being recorded.
-    private func updateEscapeKey() {
-        let gettingReady = switch recordingState {
-        case .ready, .countdown, .selectingArea: true
-        default: false
-        }
-        if gettingReady, useGlobalShortcuts {
-            _ = escapeKey.register([.init(keyCode: kVK_Escape, modifiers: 0, label: "Esc") { [weak self] in self?.escapePressed() }])
-        } else {
-            escapeKey.unregister()
-        }
-    }
-
-    private func escapePressed() {
-        switch recordingState {
-        case .ready: cancelReady()
-        case .countdown: cancelCountdown()
-        case .selectingArea: areaSelector?.cancel()
-        default: break
-        }
-    }
-
     // Also run when the app becomes active, since a shortcut may have been turned off in System Settings meanwhile.
     func updateGlobalShortcuts() {
-        updateEscapeKey()
+        recording.updateEscapeKey()
         guard useGlobalShortcuts else {
             hotKeys.unregister()
             shortcutProblem = nil
@@ -861,7 +224,7 @@ final class StitchModel {
         let clashing = [recordCombo, showCombo].filter { combo in system.contains { $0.matches(combo) } }
         let failed = hotKeys.register([
             .init(keyCode: recordCombo.keyCode, modifiers: recordCombo.modifiers, label: recordCombo.label) { [weak self] in
-                self?.recordShortcut()
+                self?.recording.recordShortcut()
             },
             .init(keyCode: showCombo.keyCode, modifiers: showCombo.modifiers, label: showCombo.label) { [weak self] in
                 self?.showApp()
@@ -953,48 +316,14 @@ final class StitchModel {
         }
     }
 
-    // One shortcut walks through the whole flow: Record, then Start, then Stop.
-    private func recordShortcut() {
-        switch recordingState {
-        case .idle:
-            if lastTarget == nil || clips.isEmpty {
-                showApp()
-            }
-            startRecording()
-        case .ready:
-            beginRecording()
-        case .countdown:
-            cancelCountdown()
-        case .recording:
-            stopRecording()
-        default:
-            showApp()
-        }
-    }
-
     func showApp() {
         NSApp.unhide(nil)
         mainWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate()
     }
 
-    func primaryRecordingAction() {
-        switch recordingState {
-        case .ready: beginRecording()
-        case .countdown: cancelCountdown()
-        case .recording: stopRecording()
-        default: break
-        }
-    }
-
     private var mainWindow: NSWindow? {
         NSApp.windows.first { $0.identifier?.rawValue == "main" }
-    }
-
-    func useSystemPicker() {
-        guard recordingState == .picking || recordingState == .needsPermission else { return }
-        recordingState = .systemPicker
-        makeRecorder().pick()
     }
 
     func openScreenRecordingSettings() {
@@ -1015,30 +344,6 @@ final class StitchModel {
         NSApp.terminate(nil)
     }
 
-    private func makeRecorder() -> Recorder {
-        let recorder = Recorder(folder: recordingsFolder, microphone: recordMicrophone) { event in
-            Task { @MainActor in self.handleRecording(event) }
-        }
-        self.recorder = recorder
-        return recorder
-    }
-
-    func stopRecording() {
-        recorder?.stop()
-    }
-
-    func cancelRecording() {
-        switch recordingState {
-        case .picking, .needsPermission:
-            recordingState = .idle
-            targets = []
-        case .systemPicker:
-            recorder?.cancel()
-        default:
-            break
-        }
-    }
-
     func chooseRecordingsFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -1054,90 +359,6 @@ final class StitchModel {
     func showRecordingsFolder() {
         try? FileManager.default.createDirectory(at: recordingsFolder, withIntermediateDirectories: true)
         NSWorkspace.shared.open(recordingsFolder)
-    }
-
-    // The window hides while recording so it stays out of display recordings; the floating bar stops it.
-    // Quitting mid-recording would leave an unfinished, unplayable clip, so the clip is finished first. Returns false
-    // when there's nothing to finish. The quit goes ahead after 5 seconds regardless.
-    func finishRecordingBeforeQuit(then quit: @escaping () -> Void) -> Bool {
-        guard let recorder, isCapturing || recordingState == .starting else { return false }
-        quitWhenRecordingEnds = quit
-        recorder.stop()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-            self?.quitIfWaiting()
-        }
-        return true
-    }
-
-    private func quitIfWaiting() {
-        let quit = quitWhenRecordingEnds
-        quitWhenRecordingEnds = nil
-        quit?()
-    }
-
-    private func handleRecording(_ event: Recorder.Event) {
-        defer {
-            if case .started = event {} else { quitIfWaiting() }
-        }
-        switch event {
-        case .started:
-            // A start that lands after a cancel belongs to a recording that's already over.
-            guard recorder != nil, recordingState == .starting || recordingState == .systemPicker else { return }
-            recordingState = .recording(since: Date())
-            targetFrame?.recording = true
-            NSApp.dockTile.badgeLabel = "REC"
-            slate?.clap()
-            slate = nil
-            if controls == nil {
-                controls = RecordingControls(model: self)
-                NSApp.hide(nil)
-            }
-        case let .finished(url):
-            endRecording()
-            if let url {
-                sessionRecordings.insert(url.standardizedFileURL)
-                add([url])
-            }
-        case .cancelled:
-            endRecording()
-        case let .failed(message):
-            endRecording()
-            warning = "Recording failed: \(message)"
-        }
-    }
-
-    private func removeRecordingControls() {
-        if let recordingActivity {
-            ProcessInfo.processInfo.endActivity(recordingActivity)
-            self.recordingActivity = nil
-        }
-        stopCountdown()
-        controls?.remove()
-        controls = nil
-        targetFrame?.remove()
-        targetFrame = nil
-        areaEditor?.remove()
-        areaEditor = nil
-        pill?.hide()
-        pill = nil
-        slate?.dismiss()
-        slate = nil
-        readyNote = nil
-        isWindowCovered = false
-        NSApp.dockTile.badgeLabel = nil
-        pendingFilter = nil
-        pendingArea = nil
-        pendingTarget = nil
-    }
-
-    private func endRecording() {
-        recorder = nil
-        removeRecordingControls()
-        recordingState = .idle
-        targets = []
-        NSApp.unhide(nil)
-        mainWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate()
     }
 
     func startWatching(in folder: URL = StitchModel.screenshotFolder()) {
@@ -1169,7 +390,7 @@ final class StitchModel {
 
     // A file is added once its size stops changing, so recordings still being written are skipped until finished.
     private func checkWatchFolder() {
-        guard let folder = watchFolder, !isEncoding, !isRecording else { return }
+        guard let folder = watchFolder, !isEncoding, !recording.isRecording else { return }
         var ready: [URL] = []
         for (url, size) in Self.movies(in: folder) where !seenFiles.contains(url) {
             if size > 0, pendingSizes[url] == size {
@@ -1370,11 +591,6 @@ final class StitchModel {
         warning = nil
         sessionRecordings = []
         sessionOutputs = []
-    }
-
-    private func offScreenNote(pid: pid_t) -> String {
-        let app = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "app"
-        return "The window isn't on screen. Click the \(app) icon in the Dock, or the window itself there if it's minimized, then click Start."
     }
 
     enum ClearAction {

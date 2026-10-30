@@ -28,14 +28,14 @@ struct TargetPicker: View {
             .padding(20)
             Divider()
             Group {
-                if model.targets.isEmpty {
+                if model.recording.targets.isEmpty {
                     ProgressView("Finding windows and displays…")
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 24) {
-                            section("Displays", model.targets.filter(\.isDisplay), includingArea: true)
-                            section("Windows", model.targets.filter { !$0.isDisplay && $0.offScreenReason == nil }, includingArea: false)
-                            section("Not on Screen", model.targets.filter { !$0.isDisplay && $0.offScreenReason != nil }, includingArea: false)
+                            section("Displays", model.recording.targets.filter(\.isDisplay), includingArea: true)
+                            section("Windows", model.recording.targets.filter { !$0.isDisplay && $0.offScreenReason == nil }, includingArea: false)
+                            section("Not on Screen", model.recording.targets.filter { !$0.isDisplay && $0.offScreenReason != nil }, includingArea: false)
                         }
                         .padding(20)
                     }
@@ -46,11 +46,11 @@ struct TargetPicker: View {
             HStack {
                 RecordingsFolderLine()
                 Spacer()
-                if model.recordingState == .picking {
-                    Button("Use macOS Picker…") { model.useSystemPicker() }
+                if model.recording.state == .picking {
+                    Button("Use macOS Picker…") { model.recording.useSystemPicker() }
                         .help("Use Apple's picker instead. It can't record an area.")
                 }
-                Button("Cancel") { model.cancelRecording() }
+                Button("Cancel") { model.recording.cancelRecording() }
                     .keyboardShortcut(.cancelAction)
             }
             .padding(16)
@@ -80,9 +80,9 @@ struct TargetTile: View {
     let target: CaptureTarget
 
     var body: some View {
-        let hovered = model.hoveredTarget == target.id
+        let hovered = model.recording.hoveredTarget == target.id
         Button {
-            model.record(target)
+            model.recording.record(target)
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack {
@@ -133,9 +133,9 @@ struct TargetTile: View {
         .buttonStyle(.plain)
         .onHover { inside in
             if inside {
-                model.hoveredTarget = target.id
-            } else if model.hoveredTarget == target.id {
-                model.hoveredTarget = nil
+                model.recording.hoveredTarget = target.id
+            } else if model.recording.hoveredTarget == target.id {
+                model.recording.hoveredTarget = nil
             }
         }
         .help(target.offScreenReason == nil ? "Choose \(target.phrase)" : "Choose \(target.phrase). Screen Stitch will try to bring it back.")
@@ -146,9 +146,9 @@ struct AreaTile: View {
     @Environment(StitchModel.self) private var model
 
     var body: some View {
-        let hovered = model.hoveredTarget == "area"
+        let hovered = model.recording.hoveredTarget == "area"
         Button {
-            model.selectArea()
+            model.recording.selectArea()
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack {
@@ -180,9 +180,9 @@ struct AreaTile: View {
         .buttonStyle(.plain)
         .onHover { inside in
             if inside {
-                model.hoveredTarget = "area"
-            } else if model.hoveredTarget == "area" {
-                model.hoveredTarget = nil
+                model.recording.hoveredTarget = "area"
+            } else if model.recording.hoveredTarget == "area" {
+                model.recording.hoveredTarget = nil
             }
         }
         .help("Record just part of the screen")
@@ -209,9 +209,9 @@ struct PermissionNeeded: View {
                 Button("Quit & Reopen") { model.relaunch() }
             }
             HStack(spacing: 16) {
-                Button("Use macOS Picker…") { model.useSystemPicker() }
+                Button("Use macOS Picker…") { model.recording.useSystemPicker() }
                     .buttonStyle(.link)
-                Button("Cancel") { model.cancelRecording() }
+                Button("Cancel") { model.recording.cancelRecording() }
                     .buttonStyle(.link)
                     .keyboardShortcut(.cancelAction)
             }

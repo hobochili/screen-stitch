@@ -41,10 +41,10 @@ struct ContentView: View {
         // The permission card isn't a sheet: macOS won't quit an app with a sheet open, which breaks the
         // Quit & Reopen that granting Screen Recording asks for.
         .overlay {
-            if model.recordingState == .systemPicker || model.recordingState == .needsPermission {
+            if model.recording.state == .systemPicker || model.recording.state == .needsPermission {
                 ZStack {
                     Color.black.opacity(0.15)
-                    if model.recordingState == .systemPicker {
+                    if model.recording.state == .systemPicker {
                         ChoosingCard()
                     } else {
                         PermissionNeeded()
@@ -53,10 +53,10 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: Binding(
-            get: { model.recordingState == .picking },
+            get: { model.recording.state == .picking },
             set: { presented in
-                if !presented, model.recordingState == .picking {
-                    model.cancelRecording()
+                if !presented, model.recording.state == .picking {
+                    model.recording.cancelRecording()
                 }
             }
         )) {
@@ -87,7 +87,7 @@ struct ContentView: View {
                         Label("Record Microphone", systemImage: model.recordMicrophone ? "mic.fill" : "mic.slash")
                     }
                     .help(model.recordMicrophone ? "Turn off the microphone for new recordings" : "Turn on the microphone for new recordings")
-                    .disabled(model.isRecording)
+                    .disabled(model.recording.isRecording)
                     Toggle(isOn: Binding(get: { model.isWatching }, set: { $0 ? model.startWatching() : model.stopWatching() })) {
                         Label("Watch for Recordings", systemImage: "eye")
                     }
@@ -121,7 +121,7 @@ struct EmptyStateView: View {
             .multilineTextAlignment(.center)
             .padding(.bottom, 32)
 
-            Button { model.startRecording() } label: {
+            Button { model.recording.startRecording() } label: {
                 Label("Record Screen", systemImage: "record.circle")
                     .font(.title3.weight(.semibold))
                     .frame(minWidth: 260)
@@ -223,7 +223,7 @@ struct ChoosingCard: View {
             }
             HStack {
                 Spacer()
-                Button("Cancel") { model.cancelRecording() }
+                Button("Cancel") { model.recording.cancelRecording() }
                     .keyboardShortcut(.cancelAction)
             }
         }

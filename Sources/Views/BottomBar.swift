@@ -6,7 +6,7 @@ struct BottomBar: View {
     var body: some View {
         @Bindable var settings = model
         VStack(alignment: .leading, spacing: 12) {
-            switch model.recordingState {
+            switch model.recording.state {
             case let .recording(since):
                 HStack(spacing: 8) {
                     Image(systemName: "record.circle.fill")
@@ -15,7 +15,7 @@ struct BottomBar: View {
                         Text(verbatim: "Recording \(formatDuration(context.date.timeIntervalSince(since)))")
                             .monospacedDigit()
                     }
-                    Button("Stop") { model.stopRecording() }
+                    Button("Stop") { model.recording.stopRecording() }
                 }
             default:
                 EmptyView()
@@ -92,7 +92,7 @@ struct BottomBar: View {
                         controls
                     }
                 }
-                .disabled(model.isEncoding || model.isRecording || model.tools == nil)
+                .disabled(model.isEncoding || model.recording.isRecording || model.tools == nil)
             }
         }
         .padding()

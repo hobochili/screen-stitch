@@ -61,7 +61,7 @@ final class RecordingControls: NSObject {
         let size = NSHostingView(rootView: RecordingBar().environment(model)).fittingSize
         let frame = panel.frame
         panel.setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)
-        let capturing = model.isCapturing
+        let capturing = model.recording.isCapturing
         item.button?.image = NSImage(systemSymbolName: capturing ? "stop.circle.fill" : "record.circle", accessibilityDescription: nil)
         item.button?.contentTintColor = capturing ? .systemRed : nil
         if capturing, ticker == nil {
@@ -77,7 +77,7 @@ final class RecordingControls: NSObject {
 
     private func updateMenuBarTitle() {
         guard let model else { return }
-        item.button?.title = switch model.recordingState {
+        item.button?.title = switch model.recording.state {
         case let .recording(since): "Stop · \(formatDuration(Date().timeIntervalSince(since)))"
         case let .countdown(remaining): "Cancel · \(remaining)"
         case .starting: "Starting…"
@@ -94,7 +94,7 @@ final class RecordingControls: NSObject {
     }
 
     @objc private func menuBarClicked() {
-        model?.primaryRecordingAction()
+        model?.recording.primaryRecordingAction()
     }
 
     func remove() {
@@ -110,7 +110,7 @@ struct RecordingBar: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            switch model.recordingState {
+            switch model.recording.state {
             case let .ready(title):
                 HStack(spacing: 8) {
                     Circle()
@@ -121,7 +121,7 @@ struct RecordingBar: View {
                             .font(.body.weight(.medium))
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        if let note = model.readyNote {
+                        if let note = model.recording.readyNote {
                             Text(verbatim: note)
                                 .font(.caption)
                                 .foregroundStyle(.orange)
@@ -144,27 +144,27 @@ struct RecordingBar: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(model.recordMicrophone ? .primary : .secondary)
                 .help(model.recordMicrophone ? "Microphone on. Click to turn it off." : "Microphone off. Click to turn it on.")
-                if model.isWindowCovered {
-                    Button("Bring to Front") { model.bringWindowToFront() }
+                if model.recording.isWindowCovered {
+                    Button("Bring to Front") { model.recording.bringWindowToFront() }
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
                         .help("Put the window you picked in front of the others. If System Settings opens, turn on Screen Stitch there, then click again.")
                 }
-                Button("Change…") { model.changeTarget() }
+                Button("Change…") { model.recording.changeTarget() }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
                     .help("Pick a different window, display or area")
-                Button("Cancel") { model.cancelReady() }
+                Button("Cancel") { model.recording.cancelReady() }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                pill("Start", systemImage: "record.circle") { model.beginRecording() }
+                pill("Start", systemImage: "record.circle") { model.recording.beginRecording() }
                     .help(model.useGlobalShortcuts ? "Start recording (\(model.recordCombo.label) from any app)" : "Start recording")
             case let .countdown(remaining):
                 Text(verbatim: "Recording starts in \(remaining)…")
                     .font(.body.monospacedDigit().weight(.medium))
                     .padding(.leading, 6)
                     .windowDragHandle()
-                Button("Cancel") { model.cancelCountdown() }
+                Button("Cancel") { model.recording.cancelCountdown() }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
                     .padding(.trailing, 6)
@@ -190,7 +190,7 @@ struct RecordingBar: View {
                 }
                 .padding(.leading, 6)
                 .windowDragHandle()
-                pill("Stop", systemImage: "stop.fill", inverted: true) { model.stopRecording() }
+                pill("Stop", systemImage: "stop.fill", inverted: true) { model.recording.stopRecording() }
                     .help(model.useGlobalShortcuts ? "Stop recording (\(model.recordCombo.label) from any app)" : "Stop recording")
             default:
                 EmptyView()
@@ -198,7 +198,7 @@ struct RecordingBar: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(model.isCapturing ? AnyShapeStyle(Color.red) : AnyShapeStyle(.regularMaterial), in: Capsule())
+        .background(model.recording.isCapturing ? AnyShapeStyle(Color.red) : AnyShapeStyle(.regularMaterial), in: Capsule())
         .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12)))
     }
 

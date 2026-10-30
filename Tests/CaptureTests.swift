@@ -97,7 +97,8 @@ struct CaptureTests {
         let scale = Int(filter.pointPixelScale)
         #expect(info.width == 400 * scale && info.height == 300 * scale)
         #expect(abs(info.duration - clip.seconds) < 0.3, "clip lasts \(info.duration)s, recorded for \(clip.seconds)s")
-        #expect(isMagenta(try averageColor(of: clip.url, at: 0.5)))
+        let colors = try frameColors(of: clip.url)
+        #expect(!colors.isEmpty && colors.allSatisfy(isMagenta))
     }
 
     // Resizing used to end the recording. Now the clip keeps going at its first size, with the window centered.
@@ -124,6 +125,41 @@ struct CaptureTests {
         #expect(parts.count == 4 && zip(parts, expected).allSatisfy { abs($0 - $1) <= 4 }, "visible area \(visible)")
     }
 
+    // The whole flow with the real capture and overlays: Record Another for an area, Start, Stop, and the clip joins
+    // the session.
+    @Test func recordAnotherAddsAClipToTheSession() async throws {
+        let folder = try TemporaryFolder()
+        NSApplication.shared.setActivationPolicy(.accessory)
+        let model = StitchModel()
+        model.useGlobalShortcuts = false
+        model.recordingsFolder = folder.url
+        model.countsDownBeforeRecording = false
+        let screen = try #require(NSScreen.main)
+        let rect = CGRect(x: 100, y: 100, width: 320, height: 240)
+        let onScreen = CGRect(x: screen.frame.minX + rect.minX, y: screen.frame.maxY - rect.maxY, width: rect.width, height: rect.height)
+        model.items = [.clip(makeClip())]
+        model.recording.lastTarget = .area(display: try #require(screen.displayID), rect: rect, onScreen: onScreen)
+
+        func settle(until done: () -> Bool) async throws {
+            for _ in 0..<100 where !done() {
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            #expect(done())
+        }
+        model.recording.startRecording()
+        try await settle { model.recording.state == .ready("the 320×240 area") }
+        model.recording.beginRecording()
+        try await settle { model.recording.isCapturing }
+        try await Task.sleep(for: .seconds(1))
+        model.recording.stopRecording()
+        try await settle { model.clips.count == 2 }
+        let clip = try #require(model.clips.last)
+        let scale = Int(screen.backingScaleFactor)
+        #expect(clip.width == 320 * scale && clip.height == 240 * scale)
+        #expect(clip.duration > 0.8)
+        #expect(model.recording.state == .idle)
+    }
+
     // Screen Stitch's own windows stay out of display recordings, so the magenta window shouldn't be in this one.
     @Test func displayRecordingLeavesOutScreenStitch() async throws {
         let folder = try TemporaryFolder()
@@ -137,6 +173,7 @@ struct CaptureTests {
         let clip = try await record(filter, area: magenta.area, into: folder) { _ in
             try await Task.sleep(for: .seconds(1))
         }
-        #expect(!isMagenta(try averageColor(of: clip.url, at: 0.5)))
+        let colors = try frameColors(of: clip.url)
+        #expect(!colors.isEmpty && !colors.contains(where: isMagenta))
     }
 }

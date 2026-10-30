@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        model.finishRecordingBeforeQuit { NSApp.reply(toApplicationShouldTerminate: true) } ? .terminateLater : .terminateNow
+        model.recording.finishRecordingBeforeQuit { NSApp.reply(toApplicationShouldTerminate: true) } ? .terminateLater : .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {

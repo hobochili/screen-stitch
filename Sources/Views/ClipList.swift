@@ -54,7 +54,7 @@ struct ClipListHeader: View {
         .controlSize(.small)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .disabled(model.isEncoding || model.isRecording)
+        .disabled(model.isEncoding || model.recording.isRecording)
     }
 }
 
@@ -63,8 +63,8 @@ struct RecordAnotherBar: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            if model.lastTarget == nil {
-                Button { model.startRecording() } label: {
+            if model.recording.lastTarget == nil {
+                Button { model.recording.startRecording() } label: {
                     Label("Record Screen", systemImage: "record.circle")
                         .padding(.horizontal, 4)
                 }
@@ -80,7 +80,7 @@ struct RecordAnotherBar: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .disabled(model.isEncoding || model.isRecording)
+        .disabled(model.isEncoding || model.recording.isRecording)
     }
 }
 
@@ -90,9 +90,15 @@ struct RecordSplitButton: View {
     @Environment(StitchModel.self) private var model
     @Environment(\.isEnabled) private var isEnabled
 
+    // AppKit draws a menu's label in the text color, black in light mode, whatever color SwiftUI asks for. A symbol
+    // with its own color keeps it.
+    private static let arrow = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Record something else")!
+        .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: NSFont.systemFontSize, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.white])))!
+
     var body: some View {
         HStack(spacing: 0) {
-            Button { model.startRecording() } label: {
+            Button { model.recording.startRecording() } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "record.circle")
                     Text("Record Another")
@@ -107,11 +113,9 @@ struct RecordSplitButton: View {
                 .fill(.white.opacity(0.35))
                 .frame(width: 1, height: 16)
             Menu {
-                Button("Record Something Else…") { model.pickTarget() }
+                Button("Record Something Else…") { model.recording.pickTarget() }
             } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white)
+                Image(nsImage: Self.arrow)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -131,7 +135,7 @@ struct LastTargetLine: View {
     @Environment(StitchModel.self) private var model
 
     var body: some View {
-        if case let .window(_, pid, title)? = model.lastTarget {
+        if case let .window(_, pid, title)? = model.recording.lastTarget {
             let app = NSRunningApplication(processIdentifier: pid)
             HStack(spacing: 6) {
                 Text("Same as last time:")
@@ -147,7 +151,7 @@ struct LastTargetLine: View {
                     .truncationMode(.tail)
             }
             .help(app?.localizedName.map { $0 == title ? $0 : "\($0): \(title)" } ?? title)
-        } else if let last = model.lastTarget {
+        } else if let last = model.recording.lastTarget {
             HStack(spacing: 6) {
                 Text("Same as last time:")
                     .foregroundStyle(.secondary)

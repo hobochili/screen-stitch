@@ -102,6 +102,12 @@ func lastVisibleArea(of url: URL) throws -> String? {
 }
 
 private func cropReadings(_ arguments: [String]) throws -> [String] {
+    try filterLog(arguments).components(separatedBy: "crop=").dropFirst()
+        .compactMap { $0.split(whereSeparator: \.isNewline).first.map(String.init) }
+}
+
+// What FFmpeg's filters print while it decodes to nowhere.
+private func filterLog(_ arguments: [String]) throws -> String {
     let process = Process()
     process.executableURL = tools!.ffmpeg
     process.arguments = ["-v", "info"] + arguments + ["-f", "null", "-"]
@@ -112,7 +118,7 @@ private func cropReadings(_ arguments: [String]) throws -> [String] {
     try process.run()
     let log = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     process.waitUntilExit()
-    return log.components(separatedBy: "crop=").dropFirst().compactMap { $0.split(whereSeparator: \.isNewline).first.map(String.init) }
+    return log
 }
 
 struct VideoInfo {
@@ -163,23 +169,25 @@ func averageBrightness(of url: URL, at time: Double) throws -> Double {
 
 // Average Y, U and V (0–255) of the frame at `time`, from FFmpeg's signalstats.
 func averageColor(of url: URL, at time: Double) throws -> (y: Double, u: Double, v: Double) {
-    let process = Process()
-    process.executableURL = tools!.ffmpeg
-    process.arguments = ["-v", "info", "-ss", String(time), "-i", url.path, "-frames:v", "1",
-                         "-vf", "signalstats,metadata=print", "-f", "null", "-"]
-    let stderr = Pipe()
-    process.standardError = stderr
-    process.standardOutput = FileHandle.nullDevice
-    process.standardInput = FileHandle.nullDevice
-    try process.run()
-    let log = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-    process.waitUntilExit()
-    func reading(_ key: String) throws -> Double {
-        let value = log.components(separatedBy: "signalstats.\(key)=").dropFirst().last?.split(whereSeparator: \.isNewline).first
-        guard let value, let number = Double(value) else {
-            throw CommandError(description: "no \(key) reading for \(url.lastPathComponent)")
-        }
-        return number
+    guard let color = try colorReadings(["-ss", String(time), "-i", url.path, "-frames:v", "1"]).last else {
+        throw CommandError(description: "no color reading for \(url.lastPathComponent)")
     }
-    return try (reading("YAVG"), reading("UAVG"), reading("VAVG"))
+    return color
+}
+
+// The same for every frame. A still screen gives few frames, so a seek can land past the last one and read nothing.
+func frameColors(of url: URL) throws -> [(y: Double, u: Double, v: Double)] {
+    try colorReadings(["-i", url.path])
+}
+
+private func colorReadings(_ input: [String]) throws -> [(y: Double, u: Double, v: Double)] {
+    let log = try filterLog(input + ["-vf", "signalstats,metadata=print"])
+    return log.components(separatedBy: "] frame:").dropFirst().compactMap { frame in
+        func reading(_ key: String) -> Double? {
+            frame.components(separatedBy: "signalstats.\(key)=").dropFirst().first?
+                .split(whereSeparator: \.isNewline).first.flatMap { Double($0) }
+        }
+        guard let y = reading("YAVG"), let u = reading("UAVG"), let v = reading("VAVG") else { return nil }
+        return (y, u, v)
+    }
 }

@@ -42,7 +42,7 @@ struct FileCommands: View {
     let model: StitchModel
 
     var body: some View {
-        let busy = model.isEncoding || model.isRecording || model.tools == nil
+        let busy = model.isEncoding || model.recording.isRecording || model.tools == nil
         Button("Add Videos…") { model.chooseFiles() }
             .keyboardShortcut("o")
             .disabled(busy)
@@ -60,11 +60,11 @@ struct RecordCommands: View {
 
     var body: some View {
         let busy = model.isEncoding || model.tools == nil
-        Button(model.isCapturing ? "Stop Recording" : "Record Screen") { model.toggleRecording() }
+        Button(model.recording.isCapturing ? "Stop Recording" : "Record Screen") { model.recording.toggleRecording() }
             .keyboardShortcut("r")
-            .disabled(busy || (model.isRecording && !model.isCapturing))
-        Button("Record Something Else…") { model.pickTarget() }
+            .disabled(busy || (model.recording.isRecording && !model.recording.isCapturing))
+        Button("Record Something Else…") { model.recording.pickTarget() }
             .keyboardShortcut("r", modifiers: [.command, .shift])
-            .disabled(busy || model.isRecording)
+            .disabled(busy || model.recording.isRecording)
     }
 }
