@@ -79,7 +79,6 @@ final class RecordingControls: NSObject {
         guard let model else { return }
         item.button?.title = switch model.recording.state {
         case let .recording(since): "Stop · \(formatDuration(Date().timeIntervalSince(since)))"
-        case let .countdown(remaining): "Cancel · \(remaining)"
         case .starting: "Starting…"
         default: "Start Recording"
         }
@@ -159,15 +158,6 @@ struct RecordingBar: View {
                     .foregroundStyle(.secondary)
                 pill("Start", systemImage: "record.circle") { model.recording.beginRecording() }
                     .help(model.useGlobalShortcuts ? "Start recording (\(model.recordCombo.label) from any app)" : "Start recording")
-            case let .countdown(remaining):
-                Text(verbatim: "Recording starts in \(remaining)…")
-                    .font(.body.monospacedDigit().weight(.medium))
-                    .padding(.leading, 6)
-                    .windowDragHandle()
-                Button("Cancel") { model.recording.cancelCountdown() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .padding(.trailing, 6)
             case .starting:
                 ProgressView()
                     .controlSize(.small)

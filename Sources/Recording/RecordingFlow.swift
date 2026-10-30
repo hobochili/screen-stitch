@@ -9,7 +9,6 @@ enum RecordingState: Equatable {
     case systemPicker
     case selectingArea
     case ready(String)
-    case countdown(Int)
     case starting
     case recording(since: Date)
 }
@@ -97,18 +96,13 @@ protocol RecordingOverlays: AnyObject {
     func showPill(_ mode: TargetPill.Mode, by target: LastTarget, start: @escaping () -> Void, stop: @escaping () -> Void)
     func hidePill()
 
-    // 3-2-1, calling `tick` each second until it's removed.
-    func showCountdown(_ count: Int, near target: LastTarget?, tick: @escaping () -> Void)
-    func updateCountdown(_ count: Int)
-    func removeCountdown()
-
     // The clapperboard that marks the start of a clip.
     func showSlate(over target: LastTarget, clipNumber: Int)
     func clapSlate()
     func dismissSlate()
 }
 
-// Picking what to record, getting ready, the countdown, recording and stopping. The model keeps the clips and settings;
+// Picking what to record, getting ready, recording and stopping. The model keeps the clips and settings;
 // ScreenCaptureKit and everything on screen are behind `CaptureSource` and `RecordingOverlays`, which tests replace.
 @MainActor
 @Observable
@@ -402,7 +396,6 @@ final class RecordingFlow {
         overlays.showSlate(over: target, clipNumber: model.clips.count + 1)
     }
 
-    // Optionally counts down 3-2-1 first, so it's obvious when recording starts; the count isn't recorded.
     func beginRecording() {
         guard case .ready = state, source.isPrepared else { return }
         if case let .window(id, pid, _)? = pendingTarget, overlays.frame(ofWindow: id) == nil {
@@ -413,27 +406,6 @@ final class RecordingFlow {
         isWindowCovered = false
         lastTarget = pendingTarget
         lockArea()
-        guard model?.countsDownBeforeRecording == true else {
-            startCapture()
-            return
-        }
-        state = .countdown(3)
-        overlays.showCountdown(3, near: pendingTarget) { [weak self] in
-            self?.countDown()
-        }
-    }
-
-    private func countDown() {
-        guard case let .countdown(remaining) = state else {
-            overlays.removeCountdown()
-            return
-        }
-        if remaining > 1 {
-            state = .countdown(remaining - 1)
-            overlays.updateCountdown(remaining - 1)
-            return
-        }
-        overlays.removeCountdown()
         startCapture()
     }
 
@@ -462,16 +434,6 @@ final class RecordingFlow {
         }
     }
 
-    func cancelCountdown() {
-        guard case .countdown = state else { return }
-        overlays.removeCountdown()
-        state = .ready(pendingTarget?.phrase ?? "")
-        if pendingTarget?.isArea == true {
-            editArea()
-        }
-        updateWindowNote()
-    }
-
     func cancelReady() {
         guard case .ready = state else { return }
         endRecording()
@@ -488,7 +450,7 @@ final class RecordingFlow {
     // being recorded.
     func updateEscapeKey() {
         let gettingReady = switch state {
-        case .ready, .countdown, .selectingArea: true
+        case .ready, .selectingArea: true
         default: false
         }
         if gettingReady, model?.useGlobalShortcuts == true {
@@ -501,7 +463,6 @@ final class RecordingFlow {
     func escapePressed() {
         switch state {
         case .ready: cancelReady()
-        case .countdown: cancelCountdown()
         case .selectingArea: overlays.cancelAreaSelection()
         default: break
         }
@@ -517,8 +478,6 @@ final class RecordingFlow {
             startRecording()
         case .ready:
             beginRecording()
-        case .countdown:
-            cancelCountdown()
         case .recording:
             stopRecording()
         default:
@@ -529,7 +488,6 @@ final class RecordingFlow {
     func primaryRecordingAction() {
         switch state {
         case .ready: beginRecording()
-        case .countdown: cancelCountdown()
         case .recording: stopRecording()
         default: break
         }
@@ -615,7 +573,6 @@ final class RecordingFlow {
             ProcessInfo.processInfo.endActivity(recordingActivity)
             self.recordingActivity = nil
         }
-        overlays.removeCountdown()
         overlays.removeBar()
         showsBar = false
         overlays.removeFrame()

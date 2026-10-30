@@ -80,20 +80,17 @@ with an arrow for **Record Something Else…** (it's a plain **Record Screen** b
    clapperboard, its stick open, and "Recording" and the number the new clip will have in the list ("Clip 3") under it.
    The stick snaps shut the moment recording begins, a fraction of a second later, and the panel fades out about a
    second after that. (With Reduce Motion on, the stick stays shut.) The floating bar turns solid red and shows **REC**
-   with the time, and the outline becomes a red frame. An area locks when you click **Start** (or when a countdown
-   begins), and clicks inside it reach your apps again. The **Start** below a window or area becomes the time and a
-   **Stop** button; an area with no room below gets them just inside its bottom edge. None of these appear in the
-   recording.
+   with the time, and the outline becomes a red frame. An area locks when you click **Start**, and clicks inside it
+   reach your apps again. The **Start** below a window or area becomes the time and a **Stop** button; an area with no
+   room below gets them just inside its bottom edge. None of these appear in the recording.
 4. Click **Stop**, in the floating bar or next to the window or area you're recording. The recording is added to the
    list as a clip and the app's window returns.
 
 - The floating bar stays above other windows, and you can drag it by its label. While it's up, a menu bar item mirrors
   it (**Start Recording**, then "Stop · 0:42" with the elapsed time), and the Dock icon shows a **REC** badge while you
   record.
-- Settings (⌘,) has two options for how recording starts. **Briefly show “Recording” when recording starts** (on by
-  default) lets you turn the panel off. **Count down 3-2-1 before recording** (off by default) adds a countdown after
-  you click **Start**: the bar says "Recording starts in 3…", a large number shows on screen, and **Cancel** stops it
-  (an area becomes editable again). Neither appears in the recording.
+- In Settings (⌘,), **Briefly show “Recording” when recording starts** (on by default) lets you turn the panel off. It
+  doesn't appear in the recording.
 - A window's size is read when recording starts, so resizing or restoring the window after you pick it is fine. If you
   resize it during the recording, the clip keeps the size it started with. A smaller window stays the same scale and is
   centered with black bars around it; a bigger one is scaled down to fit.
@@ -108,8 +105,8 @@ with an arrow for **Record Something Else…** (it's a plain **Record Screen** b
   Neither can reach a window on another desktop. Without the permission, Screen Stitch can only bring the app forward,
   so a different window of the same app can end up in front. A covered window still records normally.
 - Before recording starts, Screen Stitch takes Esc from whatever app is in front: in the area selector it closes the
-  selector, in the floating bar it cancels, and during a countdown it returns to the floating bar. Once you're
-  recording, Esc goes to the app you're recording as usual. **Use from any app** in Settings (⌘,) turns this off too.
+  selector, and in the floating bar it cancels. Once you're recording, Esc goes to the app you're recording as usual.
+  **Use from any app** in Settings (⌘,) turns this off too.
 - While the list has clips, **Record Another** reuses the last window, display or area and goes straight to the
   floating bar (an area is editable again). "Same as last time" next to it names that choice; for a window, it shows
   the app's icon and the window's title, and hovering shows the app's name and the full title. If that window or
@@ -127,15 +124,15 @@ with an arrow for **Record Something Else…** (it's a plain **Record Screen** b
   there), plus **Use Default** once you've changed the folder.
 - The sheet needs Screen Recording permission to list windows and displays. Without it, a card explains how to grant it
   (**Open System Settings**, then **Quit & Reopen**) and offers **Use macOS Picker…**, which doesn't need permission.
-  Recording starts as soon as you pick a window, app or display in the macOS picker, with no countdown or "Recording"
-  panel. It can't record an area.
+  Recording starts as soon as you pick a window, app or display in the macOS picker, with no "Recording" panel.
+  It can't record an area.
 
 ### Shortcuts from any app
 
 While Screen Stitch is open, even hidden or in the background, these shortcuts work from any app:
 
 - **⌃⌥R** (Control-Option-R) steps through recording: it opens the floating bar (or the sheet, if there's no last
-  choice to reuse), then starts, then stops. During a countdown it cancels.
+  choice to reuse), then starts, then stops.
 - **⌃⌥S** brings Screen Stitch to the front.
 
 To change one, open Settings (⌘,), click the shortcut and press the keys you want (Esc cancels). A shortcut needs at

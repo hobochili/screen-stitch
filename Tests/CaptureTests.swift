@@ -133,7 +133,6 @@ struct CaptureTests {
         let model = StitchModel()
         model.useGlobalShortcuts = false
         model.recordingsFolder = folder.url
-        model.countsDownBeforeRecording = false
         let screen = try #require(NSScreen.main)
         let rect = CGRect(x: 100, y: 100, width: 320, height: 240)
         let onScreen = CGRect(x: screen.frame.minX + rect.minX, y: screen.frame.maxY - rect.maxY, width: rect.width, height: rect.height)

@@ -1,52 +1,5 @@
 import AppKit
 
-// A big 3-2-1 in the middle of the screen being recorded, so it's obvious when recording begins.
-@MainActor
-final class CountdownOverlay {
-    private let window: NSWindow
-    private let label = NSTextField(labelWithString: "")
-
-    init(on screen: NSScreen) {
-        let size: CGFloat = 200
-        window = NSWindow(
-            contentRect: NSRect(x: screen.frame.midX - size / 2, y: screen.frame.midY - size / 2, width: size, height: size),
-            styleMask: .borderless,
-            backing: .buffered,
-            defer: false
-        )
-        window.isReleasedWhenClosed = false
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.ignoresMouseEvents = true
-        window.level = .screenSaver
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        window.canHide = false
-        window.sharingType = .none
-
-        let background = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size))
-        background.wantsLayer = true
-        background.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.6).cgColor
-        background.layer?.cornerRadius = 40
-        label.font = .systemFont(ofSize: 120, weight: .bold)
-        label.textColor = .white
-        label.alignment = .center
-        background.addSubview(label)
-        window.contentView = background
-        window.orderFrontRegardless()
-    }
-
-    func show(_ number: Int) {
-        label.stringValue = "\(number)"
-        label.sizeToFit()
-        let bounds = window.contentView?.bounds ?? .zero
-        label.frame = NSRect(x: 0, y: (bounds.height - label.frame.height) / 2, width: bounds.width, height: label.frame.height)
-    }
-
-    func remove() {
-        window.orderOut(nil)
-    }
-}
-
 // A flat clapperboard. Its stick starts open and snaps shut on clap(after:).
 final class ClapperView: NSView {
     private static let openAngle = 0.4

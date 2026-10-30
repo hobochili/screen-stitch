@@ -12,8 +12,6 @@ final class LiveRecordingOverlays: RecordingOverlays {
     private var areaSelector: AreaSelector?
     private var areaEditor: AreaEditor?
     private var pill: TargetPill?
-    private var countdown: CountdownOverlay?
-    private var countdownTimer: Timer?
     private var slate: Slate?
 
     init(model: StitchModel) {
@@ -111,7 +109,7 @@ final class LiveRecordingOverlays: RecordingOverlays {
         TargetFrame.frame(ofWindow: id)
     }
 
-    // The display what's being recorded is on: the floating bar and the countdown go there.
+    // The display what's being recorded is on: the floating bar goes there.
     private func screen(near target: LastTarget?) -> NSScreen? {
         switch target {
         case let .display(id, _)?, let .area(id, _, _)?:
@@ -222,27 +220,6 @@ final class LiveRecordingOverlays: RecordingOverlays {
 
     func hidePill() {
         pill?.hide()
-    }
-
-    func showCountdown(_ count: Int, near target: LastTarget?, tick: @escaping () -> Void) {
-        if let screen = screen(near: target) {
-            countdown = CountdownOverlay(on: screen)
-            countdown?.show(count)
-        }
-        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            MainActor.assumeIsolated { tick() }
-        }
-    }
-
-    func updateCountdown(_ count: Int) {
-        countdown?.show(count)
-    }
-
-    func removeCountdown() {
-        countdownTimer?.invalidate()
-        countdownTimer = nil
-        countdown?.remove()
-        countdown = nil
     }
 
     func showSlate(over target: LastTarget, clipNumber: Int) {

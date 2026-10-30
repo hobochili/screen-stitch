@@ -86,9 +86,6 @@ final class StitchModel {
     var showsSlate = StitchModel.defaults.object(forKey: "showsSlate") as? Bool ?? true {
         didSet { StitchModel.defaults.set(showsSlate, forKey: "showsSlate") }
     }
-    var countsDownBeforeRecording = StitchModel.defaults.bool(forKey: "countsDownBeforeRecording") {
-        didSet { StitchModel.defaults.set(countsDownBeforeRecording, forKey: "countsDownBeforeRecording") }
-    }
     var useGlobalShortcuts = StitchModel.defaults.object(forKey: "useGlobalShortcuts") as? Bool ?? true {
         didSet {
             StitchModel.defaults.set(useGlobalShortcuts, forKey: "useGlobalShortcuts")

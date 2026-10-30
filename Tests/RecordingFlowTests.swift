@@ -61,13 +61,11 @@ final class FakeOverlays: RecordingOverlays {
     var frameRecording = false
     var editingArea = false
     var pill: String?
-    var countdown: Int?
     var slate = false
     var calls: [String] = []
     var isAccessibilityAllowed = false
     var windowFrames: [CGWindowID: CGRect] = [:]
     // What the flow handed over, for the test to call.
-    var tick: (() -> Void)?
     var resize: ((CGSize) -> Void)?
     var moveArea: ((CGRect, CGRect) -> Void)?
     var areaSelected: (((display: CGDirectDisplayID, screen: CGRect, rect: CGRect)?) -> Void)?
@@ -130,18 +128,6 @@ final class FakeOverlays: RecordingOverlays {
 
     func hidePill() { pill = nil }
 
-    func showCountdown(_ count: Int, near target: LastTarget?, tick: @escaping () -> Void) {
-        countdown = count
-        self.tick = tick
-    }
-
-    func updateCountdown(_ count: Int) { countdown = count }
-
-    func removeCountdown() {
-        countdown = nil
-        tick = nil
-    }
-
     func showSlate(over target: LastTarget, clipNumber: Int) { slate = true }
 
     func clapSlate() {
@@ -171,7 +157,6 @@ private let area = LastTarget.area(display: 1, rect: CGRect(x: 100, y: 500, widt
         model = StitchModel(capture: source, overlays: overlays)
         model.useGlobalShortcuts = false
         model.recordingsFolder = folder.url
-        model.countsDownBeforeRecording = false
         model.showsSlate = true
     }
 
@@ -235,39 +220,16 @@ private let area = LastTarget.area(display: 1, rect: CGRect(x: 100, y: 500, widt
         #expect(overlays.pill == nil)
     }
 
-    @Test func countdownCountsThenRecords() async {
-        model.countsDownBeforeRecording = true
-        await getReady(display)
-        flow.beginRecording()
-        #expect(flow.state == .countdown(3) && overlays.countdown == 3)
-        overlays.tick?()
-        #expect(flow.state == .countdown(2) && overlays.countdown == 2)
-        overlays.tick?()
-        overlays.tick?()
-        #expect(flow.state == .starting)
-        #expect(overlays.countdown == nil)
-        #expect(source.calls == ["record"])
-    }
-
-    @Test func cancellingTheCountdownMakesAnAreaEditableAgain() async {
-        model.countsDownBeforeRecording = true
+    @Test func anAreaRecordsWhereItWasMoved() async {
         await getReady(area)
         #expect(overlays.editingArea && overlays.frame == nil)
         // The area's Start comes with its editor.
         #expect(overlays.pill == nil)
-        flow.beginRecording()
-        #expect(!overlays.editingArea && overlays.frame == "area")
-        flow.cancelCountdown()
-        #expect(flow.state == .ready("the 400×200 area"))
-        #expect(overlays.editingArea && overlays.frame == nil && overlays.countdown == nil)
-    }
-
-    @Test func anAreaRecordsWhereItWasMoved() async {
-        await getReady(area)
         overlays.moveArea?(CGRect(x: 200, y: 300, width: 300, height: 100), screen)
         #expect(flow.state == .ready("the 300×100 area"))
         flow.beginRecording()
         #expect(source.calls == ["record 300×100"])
+        #expect(!overlays.editingArea && overlays.frame == "area")
         source.send(.started)
         #expect(overlays.pill == "Stop")
     }
@@ -324,11 +286,7 @@ private let area = LastTarget.area(display: 1, rect: CGRect(x: 100, y: 500, widt
     }
 
     @Test func escCancelsWhatsGettingReady() async {
-        model.countsDownBeforeRecording = true
         await getReady(display)
-        flow.beginRecording()
-        flow.escapePressed()
-        #expect(flow.state == .ready("the entire screen"))
         flow.escapePressed()
         #expect(flow.state == .idle && !overlays.bar && !overlays.isAppHidden)
     }

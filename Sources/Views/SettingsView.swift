@@ -26,12 +26,6 @@ struct SettingsView: View {
                     set: { model.showsSlate = $0 }
                 ))
             }
-            captioned("Gives you a moment to get ready. The countdown isn't recorded.") {
-                Toggle("Count down 3-2-1 before recording", isOn: Binding(
-                    get: { model.countsDownBeforeRecording },
-                    set: { model.countsDownBeforeRecording = $0 }
-                ))
-            }
             LabeledContent("Shortcuts") {
                 VStack(alignment: .leading, spacing: 6) {
                     Toggle("Use from any app", isOn: Binding(get: { model.useGlobalShortcuts }, set: { model.useGlobalShortcuts = $0 }))
