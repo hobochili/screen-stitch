@@ -27,6 +27,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" build/AppIcon.iconset
 swiftc -O -wmo -swift-version 5 -parse-as-library -target arm64-apple-macos15.0 \
   Sources/*/*.swift -o "$app/Contents/MacOS/ScreenStitch"
 cp Info.plist "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(git rev-parse --short HEAD 2>/dev/null || echo 1)" "$app/Contents/Info.plist"
 
 swiftc -O make-icon.swift -o build/make-icon
 build/make-icon build/icon.png

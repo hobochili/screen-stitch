@@ -123,6 +123,7 @@ struct StatusView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Preview the saved video")
+                .onDrag { NSItemProvider(contentsOf: output) ?? NSItemProvider() }
                 VStack(alignment: .leading, spacing: 10) {
                     Label {
                         Text(verbatim: "Saved \(output.lastPathComponent) · \(formatBytes(outputBytes))\(savings(outputBytes, inputBytes))")

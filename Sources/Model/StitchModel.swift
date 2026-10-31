@@ -54,8 +54,12 @@ final class StitchModel {
             }
         }
     }
-    var outputSize: OutputSize = .p1080
-    var quality: Quality = .standard
+    var outputSize = (StitchModel.defaults.object(forKey: "outputSize") as? Int).flatMap { OutputSize(rawValue: $0) } ?? .p1080 {
+        didSet { StitchModel.defaults.set(outputSize.rawValue, forKey: "outputSize") }
+    }
+    var quality = StitchModel.defaults.string(forKey: "quality").flatMap { Quality(rawValue: $0) } ?? .standard {
+        didSet { StitchModel.defaults.set(quality.rawValue, forKey: "quality") }
+    }
     var state: EncodeState = .idle {
         didSet {
             if case .done = state {

@@ -19,8 +19,9 @@ struct CaptureTarget: Identifiable {
     init(display: SCDisplay, number: Int, of count: Int) {
         id = "display-\(display.displayID)"
         kind = .display(display)
-        title = count == 1 ? "Entire Screen" : "Display \(number)"
-        phrase = count == 1 ? "the entire screen" : "Display \(number)"
+        let name = NSScreen.screens.first { $0.displayID == display.displayID }?.localizedName ?? "Display \(number)"
+        title = count == 1 ? "Entire Screen" : name
+        phrase = count == 1 ? "the entire screen" : name
         subtitle = "\(Int(display.frame.width))×\(Int(display.frame.height))"
         icon = NSImage(systemSymbolName: "display", accessibilityDescription: nil)
         offScreenReason = nil

@@ -84,14 +84,6 @@ final class RecordingControls: NSObject {
         }
     }
 
-    func setHidden(_ hidden: Bool) {
-        if hidden {
-            panel.orderOut(nil)
-        } else {
-            panel.orderFrontRegardless()
-        }
-    }
-
     @objc private func menuBarClicked() {
         model?.recording.primaryRecordingAction()
     }
