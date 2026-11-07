@@ -11,7 +11,8 @@
 ```
 
 Building needs only the Command Line Tools (`xcode-select --install`), not Xcode. `build.sh` compiles every file in
-`Sources/` with `swiftc` and draws the app icon with `make-icon.swift`.
+`Sources/` with `swiftc` and draws the app icon with `make-icon.swift`. It also stamps the git short hash into the app's
+`CFBundleVersion`, so the build number in the About box and Get Info matches a commit.
 
 > [!NOTE]
 > The Command Line Tools don't include the SwiftUI macro plugin, so the code avoids `@State` and keeps view state on the

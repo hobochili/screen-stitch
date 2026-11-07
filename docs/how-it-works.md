@@ -1,7 +1,7 @@
 # How it works
 
 [Order](#order) · [Resolution and quality](#resolution-and-quality) · [Output](#output) ·
-[Command line](#command-line)
+[Saved session](#saved-session) · [Command line](#command-line)
 
 ## Order
 
@@ -51,6 +51,14 @@ bigger file.
 
 **Combine Without Compressing…** copies each clip's video and audio as they are (H.264 or HEVC, with AAC) into an MP4,
 so none of this applies to it.
+
+## Saved session
+
+Screen Stitch writes the session to `~/Library/Application Support/Screen Stitch/session.json` whenever it changes, and
+reads it back on the next launch. It holds the clip list in order, the title cards with their text, length and style,
+whether you've reordered by hand (see [Order](#order)), which clips were recorded in the session and the videos saved
+from it. Clips are files, so only their paths are saved. Each is read again on launch, and any that were moved, deleted
+or can't be read are left out with a warning. **Clear Session** empties the file.
 
 ## Command line
 

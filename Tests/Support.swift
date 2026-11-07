@@ -4,10 +4,12 @@ import Testing
 // test.sh builds the app and these tests into one executable; this replaces the app's entry point.
 @main
 enum TestRunner {
-    // The app's settings go to a throwaway domain, removed when the run ends, instead of the runner's own.
+    // The app's settings go to a throwaway domain, removed when the run ends, instead of the runner's own, and the
+    // session isn't saved unless a test says where.
     static func main() async {
         UserDefaults.standard.removePersistentDomain(forName: "local.screen-stitch.tests")
         StitchModel.defaults = UserDefaults(suiteName: "local.screen-stitch.tests")!
+        SavedSession.defaultFile = nil
         atexit { UserDefaults.standard.removePersistentDomain(forName: "local.screen-stitch.tests") }
         await Testing.__swiftPMEntryPoint() as Never
     }

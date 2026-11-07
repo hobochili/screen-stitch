@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         terminationSignal?.resume()
 
         model.updateGlobalShortcuts()
+        Task { await model.restoreSession() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -54,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         model.abortForQuit()
+        model.saveSession()
     }
 
     // Quick Look asks the responder chain for a controller, and the chain ends at the app delegate.

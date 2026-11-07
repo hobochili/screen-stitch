@@ -37,14 +37,23 @@ final class StitchModel {
             if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
                 QLPreviewPanel.shared().reloadData()
             }
+            scheduleSave()
         }
     }
     var clips: [Clip] { items.compactMap(\.clip) }
     var titleCards: [TitleCard] { items.compactMap(\.card) }
     // Recordings made or picked up during the session, as opposed to videos added from elsewhere, and every video
     // combined from it. Clear Session can move these to the Trash.
-    @ObservationIgnored var sessionRecordings: Set<URL> = []
-    @ObservationIgnored var sessionOutputs: [URL] = []
+    @ObservationIgnored var sessionRecordings: Set<URL> = [] {
+        didSet { scheduleSave() }
+    }
+    @ObservationIgnored var sessionOutputs: [URL] = [] {
+        didSet { scheduleSave() }
+    }
+    // Where the session is kept between launches. Tests use a file of their own, or none.
+    @ObservationIgnored var sessionFile = SavedSession.defaultFile
+    @ObservationIgnored private var isRestoring = false
+    @ObservationIgnored private var savePending = false
     @ObservationIgnored var moveToTrash: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
     var selection: Set<UUID> = [] {
         didSet {
@@ -125,7 +134,9 @@ final class StitchModel {
     }
 
     private var probing: Set<URL> = []
-    private var isManuallyOrdered = false
+    private var isManuallyOrdered = false {
+        didSet { scheduleSave() }
+    }
     @ObservationIgnored private var watchTimer: Timer?
     @ObservationIgnored private var seenFiles: Set<URL> = []
     @ObservationIgnored private var pendingSizes: [URL: Int] = [:]
@@ -208,6 +219,71 @@ final class StitchModel {
             for clip in added {
                 Task { await loadThumbnail(for: clip) }
             }
+        }
+    }
+
+    // Several changes in a row are saved once, after the current event.
+    private func scheduleSave() {
+        guard !savePending, !isRestoring, sessionFile != nil else { return }
+        savePending = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.saveSession() }
+        }
+    }
+
+    func saveSession() {
+        savePending = false
+        guard let sessionFile, !isRestoring else { return }
+        let saved = SavedSession(
+            items: items.map { item in
+                switch item {
+                case let .clip(clip): .clip(clip.url)
+                case let .card(card): .card(text: card.text, duration: card.duration, isLight: card.isLight, role: card.role)
+                }
+            },
+            isManuallyOrdered: isManuallyOrdered,
+            recordings: sessionRecordings.sorted { $0.path < $1.path },
+            outputs: sessionOutputs
+        )
+        try? saved.save(to: sessionFile)
+    }
+
+    // Brings back the session from the last launch, after any videos opened meanwhile. Clips that are gone or can no
+    // longer be read are left out.
+    func restoreSession() async {
+        guard let tools, let sessionFile, let saved = SavedSession.load(from: sessionFile) else { return }
+        isRestoring = true
+        let urls = saved.items.compactMap { if case let .clip(url) = $0 { url } else { nil } }
+        let probed = Dictionary(await Prober.probeAll(urls, ffprobe: tools.ffprobe)) { first, _ in first }
+        let known = Set(clips.map(\.url))
+        var missing: [String] = []
+        let restored: [SessionItem] = saved.items.compactMap { item in
+            switch item {
+            case let .clip(url):
+                guard !known.contains(url) else { return nil }
+                guard let clip = probed[url] ?? nil else {
+                    missing.append(url.lastPathComponent)
+                    return nil
+                }
+                return .clip(clip)
+            case let .card(text, duration, isLight, role):
+                return .card(TitleCard(text: text, duration: duration, isLight: isLight, role: role))
+            }
+        }
+        items = restored + items
+        isManuallyOrdered = saved.isManuallyOrdered
+        if !isManuallyOrdered {
+            sortClipsKeepingCards()
+        }
+        sessionRecordings.formUnion(saved.recordings)
+        sessionOutputs = saved.outputs + sessionOutputs.filter { !saved.outputs.contains($0) }
+        isRestoring = false
+        saveSession()
+        if !missing.isEmpty {
+            warning = "Left out (moved, deleted or can't be opened since last time): \(missing.joined(separator: ", "))"
+        }
+        for clip in restored.compactMap(\.clip) {
+            Task { await loadThumbnail(for: clip) }
         }
     }
 
@@ -693,8 +769,23 @@ final class StitchModel {
         titleCards.isEmpty && EncodeJob.canJoin(clips)
     }
 
+    // Clips whose files were moved, renamed or deleted after they were added, named so they can be found.
+    var missingClipsProblem: String? {
+        let missing = clips.filter { !FileManager.default.fileExists(atPath: $0.url.path) }.map(\.name)
+        if missing.count == 1 {
+            return "\(missing[0]) can't be found. It may have been moved, renamed or deleted. Remove it from the list, or add it again from where it is now."
+        } else if missing.count > 1 {
+            return "\(missing.count) clips can't be found: \(missing.joined(separator: ", ")). They may have been moved, renamed or deleted. Remove them from the list, or add them again from where they are now."
+        }
+        return nil
+    }
+
     func chooseOutputAndEncode(compressing: Bool = true) {
         guard let first = clips.first else { return }
+        if let missingClipsProblem {
+            state = .failed(missingClipsProblem)
+            return
+        }
         let single = clips.count == 1
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.mpeg4Movie]
@@ -714,6 +805,10 @@ final class StitchModel {
 
     func encode(to output: URL, compressing: Bool = true) {
         guard let tools, !clips.isEmpty, !isEncoding else { return }
+        if let missingClipsProblem {
+            state = .failed(missingClipsProblem)
+            return
+        }
         let temporary = FileManager.default.temporaryDirectory
         var job: EncodeJob
         do {

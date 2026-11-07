@@ -136,6 +136,7 @@ struct StatusView: View {
                     HStack(spacing: 8) {
                         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([output]) }
                         Button("Open") { NSWorkspace.shared.open(output) }
+                        ShareLink(item: output) { Text("Share…") }
                         Spacer(minLength: 16)
                         Button("Clear Session") { model.clearSession() }
                             .buttonStyle(.borderedProminent)

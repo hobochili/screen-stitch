@@ -25,7 +25,7 @@ struct Clip: Identifiable, Hashable {
 struct TitleCard: Identifiable, Hashable {
     static let durations: ClosedRange<Double> = 0.25...10
 
-    enum Role {
+    enum Role: String, Codable {
         case before
         case after
     }

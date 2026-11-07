@@ -147,7 +147,7 @@ struct EncodeCleanupTests {
         let input = folder.file("clip.mov")
         try makeVideo(input, width: 320, height: 240)
         let model = try model(with: [input])
-        try FileManager.default.removeItem(at: input)
+        try Data("not a video".utf8).write(to: input)
         let output = folder.file("existing.mp4")
         try Data("keep me".utf8).write(to: output)
         try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: output.path)
@@ -158,6 +158,21 @@ struct EncodeCleanupTests {
             return
         }
         #expect(FileManager.default.fileExists(atPath: output.path))
+    }
+
+    @Test func missingClipsAreNamedBeforeFFmpegStarts() async throws {
+        let folder = try TemporaryFolder()
+        let kept = folder.file("kept.mov")
+        let gone = folder.file("gone.mov")
+        try makeVideo(kept, width: 320, height: 240)
+        try makeVideo(gone, width: 320, height: 240)
+        let model = try model(with: [kept, gone])
+        try FileManager.default.removeItem(at: gone)
+        let output = folder.file("combined.mp4")
+        model.encode(to: output)
+        #expect(model.state == .failed(
+            "gone.mov can't be found. It may have been moved, renamed or deleted. Remove it from the list, or add it again from where it is now."))
+        #expect(!FileManager.default.fileExists(atPath: output.path))
     }
 
     @Test func cancellingRemovesThePartialFile() async throws {

@@ -5,7 +5,8 @@
 [Starting over](#starting-over) · [Troubleshooting](#troubleshooting)
 
 A **session** is the clips in the list plus the video you save from them. Record or add clips, put them in order, then
-combine them. When you're done, click **Clear Session** to start the next one.
+combine them. When you're done, click **Clear Session** to start the next one. Screen Stitch keeps your session between
+launches (see [Starting over](#starting-over)).
 
 Before you have any clips, the window shows a big red **Record Screen** button, with **Watch for Recordings** and
 **Add Videos…** below it. After that, it shows the list of clips. **Title Cards**, **Sort by Date** and
@@ -126,12 +127,16 @@ Title cards aren't files, so they don't survive **Clear Session**.
 ## Combining
 
 Choose a **Resolution** and **Quality** in the bottom bar. The defaults suit most videos, and
-[How it works](how-it-works.md#resolution-and-quality) explains the options. Then click **Combine & Compress…** and
-choose where to save the video. With only one clip, the button says **Compress…**. While it works, **Cancel** stops it
-and deletes the unfinished file.
+[How it works](how-it-works.md#resolution-and-quality) explains the options. Screen Stitch remembers both for next time.
+Then click **Combine & Compress…** and choose where to save the video. With only one clip, the button says
+**Compress…**. While it works, **Cancel** stops it and deletes the unfinished file.
 
-When it's done, the bottom bar shows the saved video and its size compared with the clips, with **Show in Finder** and
-**Open**.
+Before it starts, Screen Stitch checks that every clip's file is still there. If one was moved, renamed or deleted, the
+bottom bar names it. Remove it from the list, or add it again from where it is now.
+
+When it's done, the bottom bar shows the saved video and its size compared with the clips, with **Show in Finder**,
+**Open** and **Share…**. **Share…** opens the macOS share menu. You can also drag the video's thumbnail into Mail,
+Messages, a Finder window or any other app that takes files.
 
 > [!TIP]
 > With two or more clips that all have the same size and format, an arrow next to **Combine & Compress…** offers
@@ -140,6 +145,11 @@ When it's done, the bottom bar shows the saved video and its size compared with 
 > microphone was on for all of them or off for all of them. The option disappears while the list has title cards.
 
 ## Starting over
+
+Your session is saved as you go, so closing the window or quitting doesn't lose it. The next time you open Screen
+Stitch, the clips, title cards and order are back. A clip that was moved or deleted, or can't be read any more, is left
+out, and a warning names it. The card for the video you saved isn't brought back yet, but **Move Everything to Trash**
+below still finds videos saved before you quit.
 
 Click **Clear Session** (⌘N) to empty the list and begin a new session. It's in the list header, and in the bottom bar
 once you've saved the video. Screen Stitch asks what to do with the files first:
