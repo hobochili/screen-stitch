@@ -32,7 +32,13 @@ struct SavedSessionTests {
         before.saveSession()
 
         let after = model(saving: file)
-        await after.restoreSession()
+        let restoring = after.restoreSession()
+        #expect(after.isRestoring)
+        await restoring?.value
+        #expect(!after.isRestoring)
+        // A restore that finishes inside half a second never shows the spinner.
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(!after.isRestoringSlowly)
         let rows = after.items.map { item in
             switch item {
             case let .clip(clip): clip.name
@@ -60,7 +66,7 @@ struct SavedSessionTests {
         try FileManager.default.removeItem(at: gone)
 
         let after = model(saving: file)
-        await after.restoreSession()
+        await after.restoreSession()?.value
         #expect(after.clips.map(\.name) == ["kept.mov"])
         #expect(after.warning == "Left out (moved, deleted or can't be opened since last time): gone.mov")
         // The file now matches what's in the list.
@@ -81,7 +87,7 @@ struct SavedSessionTests {
 
         let after = model(saving: file)
         after.items = [try probe(opened)]
-        await after.restoreSession()
+        await after.restoreSession()?.value
         #expect(after.clips.map(\.name) == ["saved.mov", "opened.mov"])
     }
 

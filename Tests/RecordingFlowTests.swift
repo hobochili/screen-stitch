@@ -285,16 +285,18 @@ private let area = LastTarget.area(display: 1, rect: CGRect(x: 100, y: 500, widt
         #expect(source.calls.last == "stop")
     }
 
-    @Test func escCancelsWhatsGettingReady() async {
+    // The app to be recorded is in front by then, and its own Esc has to work.
+    @Test func escIsLeftToOtherAppsOnceReady() async {
         await getReady(display)
+        #expect(!flow.takesEscape)
         flow.escapePressed()
-        #expect(flow.state == .idle && !overlays.bar && !overlays.isAppHidden)
+        #expect(flow.state == .ready("the entire screen") && overlays.bar)
     }
 
     @Test func escEndsAreaSelection() {
         flow.pickTarget()
         flow.selectArea()
-        #expect(flow.state == .selectingArea)
+        #expect(flow.state == .selectingArea && flow.takesEscape)
         flow.escapePressed()
         #expect(overlays.calls.contains("cancel area selection") && flow.state == .idle)
     }

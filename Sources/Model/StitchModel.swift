@@ -47,14 +47,24 @@ final class StitchModel {
     @ObservationIgnored var sessionRecordings: Set<URL> = [] {
         didSet { scheduleSave() }
     }
-    @ObservationIgnored var sessionOutputs: [URL] = [] {
+    var sessionOutputs: [URL] = [] {
         didSet { scheduleSave() }
     }
+    // Which saved video the bottom bar's Saved line shows, when there are several. Nil means the newest.
+    var shownVideo: URL?
     // Where the session is kept between launches. Tests use a file of their own, or none.
     @ObservationIgnored var sessionFile = SavedSession.defaultFile
-    @ObservationIgnored private var isRestoring = false
+    // The start screen waits while the last session comes back, so it doesn't flash up first.
+    private(set) var isRestoring = false
+    // Set once a restore has run for half a second, so a quick one never blinks a spinner.
+    private(set) var isRestoringSlowly = false
     @ObservationIgnored private var savePending = false
-    @ObservationIgnored var moveToTrash: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
+    // Returns where the file went, so it can be put back.
+    @ObservationIgnored var moveToTrash: (URL) throws -> URL? = { url in
+        var result: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &result)
+        return result as URL?
+    }
     var selection: Set<UUID> = [] {
         didSet {
             quickLookOutput = nil
@@ -86,12 +96,24 @@ final class StitchModel {
     var progress = 0.0
     var notice: String? {
         didSet {
+            removal = nil
             guard let notice else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
                 if self?.notice == notice { self?.notice = nil }
             }
         }
     }
+    // The last rows removed, while the notice about them shows, so they can be brought back.
+    struct Removal {
+        let before: [SessionItem]
+        let selection: Set<UUID>
+        let removed: Set<UUID>
+        let thumbnails: [UUID: NSImage]
+        // Original location to where it is in the Trash.
+        var trashed: [URL: URL] = [:]
+    }
+
+    private(set) var removal: Removal?
     var warning: String?
     var isDropTargeted = false
     var watchFolder: URL?
@@ -149,6 +171,26 @@ final class StitchModel {
     var isWatching: Bool { watchFolder != nil }
     var hasBottomBar: Bool {
         !clips.isEmpty || isWatching || warning != nil || notice != nil || state != .idle || recording.isCapturing
+            || !savedVideos.isEmpty
+    }
+
+    // Every video saved this session that's still there, newest first. Unlike existingOutputs, this includes one added
+    // back in as a clip.
+    var savedVideos: [URL] {
+        sessionOutputs.reversed().filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    var shownSavedVideo: URL? {
+        let videos = savedVideos
+        return shownVideo.flatMap { videos.contains($0) ? $0 : nil } ?? videos.first
+    }
+
+    // The Saved line takes over from the full card once the list changes, and stays after an error.
+    var showsSavedLine: Bool {
+        switch state {
+        case .idle, .failed: shownSavedVideo != nil
+        case .encoding, .done: false
+        }
     }
     nonisolated static let defaultRecordingsFolder = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Movies/Screen Stitch", isDirectory: true)
@@ -249,10 +291,19 @@ final class StitchModel {
     }
 
     // Brings back the session from the last launch, after any videos opened meanwhile. Clips that are gone or can no
-    // longer be read are left out.
-    func restoreSession() async {
-        guard let tools, let sessionFile, let saved = SavedSession.load(from: sessionFile) else { return }
+    // longer be read are left out. `isRestoring` is set before this returns, so the window's first frame already waits.
+    @discardableResult
+    func restoreSession() -> Task<Void, Never>? {
+        guard let tools, let sessionFile, let saved = SavedSession.load(from: sessionFile) else { return nil }
         isRestoring = true
+        Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            isRestoringSlowly = isRestoring
+        }
+        return Task { await bringBack(saved, tools: tools) }
+    }
+
+    private func bringBack(_ saved: SavedSession, tools: Tools) async {
         let urls = saved.items.compactMap { if case let .clip(url) = $0 { url } else { nil } }
         let probed = Dictionary(await Prober.probeAll(urls, ffprobe: tools.ffprobe)) { first, _ in first }
         let known = Set(clips.map(\.url))
@@ -278,6 +329,7 @@ final class StitchModel {
         sessionRecordings.formUnion(saved.recordings)
         sessionOutputs = saved.outputs + sessionOutputs.filter { !saved.outputs.contains($0) }
         isRestoring = false
+        isRestoringSlowly = false
         saveSession()
         if !missing.isEmpty {
             warning = "Left out (moved, deleted or can't be opened since last time): \(missing.joined(separator: ", "))"
@@ -594,14 +646,185 @@ final class StitchModel {
         selection = [items[next].id]
     }
 
-    func remove(_ clip: Clip) {
-        remove(item: clip.id)
-        thumbnails[clip.id] = nil
+    // A row's menu acts on the whole selection when that row is part of it, as in the Finder.
+    func targets(for id: UUID) -> Set<UUID> {
+        selection.contains(id) ? selection : [id]
     }
 
-    func remove(item id: UUID) {
-        items.removeAll { $0.id == id }
+    var selectionHasClips: Bool {
+        clips.contains { selection.contains($0.id) }
+    }
+
+    // Takes rows out of the list and leaves their files alone. The notice can undo it, or move recordings made in this
+    // session to the Trash after all.
+    func remove(_ ids: Set<UUID>) {
+        guard let removal = takeOut(ids) else { return }
+        notice = "Removed \(describe(removal.removed, in: removal.before)) from the list."
+        self.removal = removal
+    }
+
+    // Recordings made in this session go straight to the Trash, as files do in the Finder. Videos added from elsewhere
+    // weren't made here, so Screen Stitch asks first.
+    func trashItems(_ ids: Set<UUID>) {
+        guard let prompt = trashPrompt(for: ids) else {
+            trash(ids)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = prompt.title
+        alert.informativeText = prompt.message
+        alert.addButton(withTitle: "Remove from List").keyEquivalent = "\r"
+        alert.addButton(withTitle: "Move to Trash").hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: remove(ids)
+        case .alertSecondButtonReturn: trash(ids)
+        default: break
+        }
+    }
+
+    func trashPrompt(for ids: Set<UUID>) -> (title: String, message: String)? {
+        let chosen = clips.filter { ids.contains($0.id) }
+        let added = chosen.filter { !sessionRecordings.contains($0.url) }
+        guard !added.isEmpty else { return nil }
+        let title = chosen.count == 1 ? "Move “\(chosen[0].name)” to the Trash?" : "Move \(chosen.count) clips to the Trash?"
+        let message = chosen.count == 1 ? "You added this video from elsewhere. Screen Stitch didn't record it."
+            : added.count == chosen.count ? "You added these videos from elsewhere. Screen Stitch didn't record them."
+            : added.count == 1 ? "1 of the \(chosen.count) clips was added from elsewhere. Screen Stitch didn't record it."
+            : "\(added.count) of the \(chosen.count) clips were added from elsewhere. Screen Stitch didn't record them."
+        return (title, message + " You can put back anything moved to the Trash.")
+    }
+
+    // Moves the clips' files to the Trash and takes their rows, and any title cards chosen with them, out of the list.
+    // A clip whose file can't be moved stays.
+    func trash(_ ids: Set<UUID>) {
+        let result = moveFilesToTrash(clips.filter { ids.contains($0.id) })
+        let removal = takeOut(ids.subtracting(result.failed.map(\.id)))
+        if let removal {
+            reportTrashed(removal, result)
+        } else if !result.failed.isEmpty {
+            warning = "Couldn't move to the Trash: \(result.failed.map(\.name).joined(separator: ", "))"
+        }
+    }
+
+    // The notice's Move to Trash, for clips just removed from the list.
+    func trashRemoved() {
+        guard let removal, canTrashRemoved else { return }
+        let result = moveFilesToTrash(removal.before.compactMap(\.clip).filter { removal.removed.contains($0.id) })
+        if result.moved.isEmpty {
+            notice = nil
+        }
+        reportTrashed(removal, result)
+    }
+
+    // True when the last removal was only of recordings made in this session, which can go to the Trash without asking.
+    var canTrashRemoved: Bool {
+        guard let removal, removal.trashed.isEmpty else { return false }
+        let removed = removal.before.compactMap(\.clip).filter { removal.removed.contains($0.id) }
+        return !removed.isEmpty && removed.allSatisfy { sessionRecordings.contains($0.url) }
+    }
+
+    func undoRemoval() {
+        guard let removal, removal.trashed.isEmpty else { return }
+        restore(removal)
+    }
+
+    // Moves the files back out of the Trash and puts their rows back. Any that can't be moved back are left out.
+    func putBack() {
+        guard let removal, !removal.trashed.isEmpty else { return }
+        var failed: Set<URL> = []
+        for (original, inTrash) in removal.trashed {
+            do {
+                try FileManager.default.moveItem(at: inTrash, to: original)
+            } catch {
+                failed.insert(original)
+            }
+        }
+        restore(removal, leavingOut: failed)
+        let names = failed.map(\.lastPathComponent).sorted()
+        if names.count == 1 {
+            warning = "Couldn't put back \(names[0]). It's still in the Trash."
+        } else if names.count > 1 {
+            warning = "Couldn't put back \(names.count) clips: \(names.joined(separator: ", ")). They're still in the Trash."
+        }
+    }
+
+    private func restore(_ removal: Removal, leavingOut missing: Set<URL> = []) {
+        notice = nil
+        items = removal.before.filter { item in item.clip.map { !missing.contains($0.url) } ?? true }
+        thumbnails.merge(removal.thumbnails) { current, _ in current }
+        selection = removal.selection
         clearResult()
+    }
+
+    private struct TrashResult {
+        // Original location to where it is in the Trash, for each file whose new location is known.
+        var trashed: [URL: URL] = [:]
+        var moved: [Clip] = []
+        var failed: [Clip] = []
+    }
+
+    private func moveFilesToTrash(_ clips: [Clip]) -> TrashResult {
+        var result = TrashResult()
+        for clip in clips {
+            do {
+                if let inTrash = try moveToTrash(clip.url) {
+                    result.trashed[clip.url] = inTrash
+                }
+                result.moved.append(clip)
+            } catch {
+                result.failed.append(clip)
+            }
+        }
+        return result
+    }
+
+    private func reportTrashed(_ removal: Removal, _ result: TrashResult) {
+        if !result.moved.isEmpty {
+            notice = "Moved \(describe(Set(result.moved.map(\.id)), in: removal.before)) to the Trash."
+            // Put Back needs to know where every file went. Without that, the Trash's own Put Back still works.
+            if result.trashed.count == result.moved.count {
+                var removal = removal
+                removal.trashed = result.trashed
+                self.removal = removal
+            }
+        }
+        if !result.failed.isEmpty {
+            warning = "Couldn't move to the Trash: \(result.failed.map(\.name).joined(separator: ", "))"
+        }
+    }
+
+    // Removes the rows and, if that empties the selection, selects the row that took the first one's place, or else the
+    // one before it.
+    private func takeOut(_ ids: Set<UUID>) -> Removal? {
+        let before = items
+        guard let first = before.firstIndex(where: { ids.contains($0.id) }) else { return nil }
+        let removal = Removal(before: before, selection: selection, removed: ids.intersection(before.map(\.id)),
+                              thumbnails: thumbnails.filter { ids.contains($0.key) })
+        let wasSelected = !selection.isEmpty
+        items.removeAll { ids.contains($0.id) }
+        for id in ids {
+            thumbnails[id] = nil
+        }
+        if wasSelected, selection.isEmpty, !items.isEmpty {
+            selection = [items[min(first, items.count - 1)].id]
+        }
+        clearResult()
+        return removal
+    }
+
+    // “Take 3.mov”, the “Before…” title card, 3 clips, or 2 clips and 1 title card.
+    private func describe(_ ids: Set<UUID>, in list: [SessionItem]) -> String {
+        let chosen = list.filter { ids.contains($0.id) }
+        if chosen.count == 1, let item = chosen.first {
+            let text = item.card?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return item.clip.map { "“\($0.name)”" } ?? (text.isEmpty ? "the empty title card" : "the “\(text)” title card")
+        }
+        let clipCount = chosen.filter { $0.clip != nil }.count
+        let cardCount = chosen.count - clipCount
+        let clipsPart = clipCount == 1 ? "1 clip" : "\(clipCount) clips"
+        let cardsPart = cardCount == 1 ? "1 title card" : "\(cardCount) title cards"
+        return cardCount == 0 ? clipsPart : clipCount == 0 ? cardsPart : "\(clipsPart) and \(cardsPart)"
     }
 
     func move(from source: IndexSet, to destination: Int) {
@@ -668,6 +891,7 @@ final class StitchModel {
         warning = nil
         sessionRecordings = []
         sessionOutputs = []
+        shownVideo = nil
     }
 
     enum ClearAction {
@@ -682,10 +906,18 @@ final class StitchModel {
         return sessionOutputs.filter { !clipURLs.contains($0) && FileManager.default.fileExists(atPath: $0.path) }
     }
 
-    // Each choice says what it moves, so "everything" can't be taken to mean the whole folder.
-    var clearPrompt: (title: String, message: String, offersEverything: Bool) {
+    // Each choice says what it moves, so "everything" can't be taken to mean the whole folder. Keep Files comes first.
+    var clearPrompt: (title: String, message: String, choices: [(label: String, action: ClearAction)]) {
         let count = clips.count
-        let title = isCombined ? "Clear this session?"
+        let outputs = existingOutputs
+        guard count > 0 else {
+            let message = outputs.count == 1
+                ? "Keep Files leaves the saved video, “\(outputs[0].lastPathComponent)”, where it is. Move Video to Trash moves it."
+                : "Keep Files leaves the \(outputs.count) videos saved in this session where they are. Move Videos to Trash moves them."
+            return ("Clear this session?", message + " You can put back anything moved to the Trash.",
+                    [("Keep Files", .keepFiles), (outputs.count == 1 ? "Move Video to Trash" : "Move Videos to Trash", .moveEverything)])
+        }
+        let title = isCombined || !outputs.isEmpty ? "Clear this session?"
             : count == 1 ? "Clear this session without compressing its clip?"
             : "Clear this session without combining its \(count) clips?"
         var message = "Keep Files leaves every file where it is. "
@@ -697,7 +929,6 @@ final class StitchModel {
             message += ", including \(added) you added from elsewhere"
         }
         message += "."
-        let outputs = existingOutputs
         let theClips = count == 1 ? "the clip" : "the clips"
         if outputs.count == 1 {
             message += " Move Everything to Trash moves \(theClips) and the saved video, “\(outputs[0].lastPathComponent)”."
@@ -705,12 +936,16 @@ final class StitchModel {
             message += " Move Everything to Trash moves \(theClips) and the \(outputs.count) videos saved in this session."
         }
         message += (outputs.isEmpty ? "" : " Nothing else is touched.") + " You can put back anything moved to the Trash."
-        return (title, message, !outputs.isEmpty)
+        var choices: [(label: String, action: ClearAction)] = [("Keep Files", .keepFiles), ("Move Clips to Trash", .moveClips)]
+        if !outputs.isEmpty {
+            choices.append(("Move Everything to Trash", .moveEverything))
+        }
+        return (title, message, choices)
     }
 
     // Ends the session, asking what to do with its files.
     func clearSession() {
-        guard !clips.isEmpty else {
+        guard !clips.isEmpty || !existingOutputs.isEmpty else {
             clearSession(.keepFiles)
             return
         }
@@ -718,18 +953,19 @@ final class StitchModel {
         let alert = NSAlert()
         alert.messageText = prompt.title
         alert.informativeText = prompt.message
-        // Return keeps the files. NSAlert would make Keep Files the default anyway; this doesn't leave it to chance.
-        alert.addButton(withTitle: "Keep Files").keyEquivalent = "\r"
-        alert.addButton(withTitle: "Move Clips to Trash").hasDestructiveAction = true
-        var actions: [ClearAction] = [.keepFiles, .moveClips]
-        if prompt.offersEverything {
-            alert.addButton(withTitle: "Move Everything to Trash").hasDestructiveAction = true
-            actions.append(.moveEverything)
+        for (index, choice) in prompt.choices.enumerated() {
+            let button = alert.addButton(withTitle: choice.label)
+            // Return keeps the files, set here rather than left to NSAlert's own default.
+            if index == 0 {
+                button.keyEquivalent = "\r"
+            } else {
+                button.hasDestructiveAction = true
+            }
         }
         alert.addButton(withTitle: "Cancel")
         let choice = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
-        guard actions.indices.contains(choice) else { return }
-        clearSession(actions[choice])
+        guard prompt.choices.indices.contains(choice) else { return }
+        clearSession(prompt.choices[choice].action)
     }
 
     // Only files the session knows about are moved: its clips and the videos combined from them.
@@ -742,7 +978,7 @@ final class StitchModel {
         var failed: [String] = []
         for file in files {
             do {
-                try moveToTrash(file)
+                _ = try moveToTrash(file)
             } catch {
                 failed.append(file.lastPathComponent)
             }
@@ -909,9 +1145,10 @@ final class StitchModel {
             let bytes = (try? job.output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             progress = 1
             let output = job.output.standardizedFileURL
-            if !sessionOutputs.contains(output) {
-                sessionOutputs.append(output)
-            }
+            // Saving over an earlier video makes it the newest again.
+            sessionOutputs.removeAll { $0 == output }
+            sessionOutputs.append(output)
+            shownVideo = nil
             state = .done(output: job.output, outputBytes: Int64(bytes), inputBytes: clips.reduce(0) { $0 + $1.fileSize })
             NSApp?.requestUserAttention(.informationalRequest)
             Task {
@@ -929,9 +1166,13 @@ final class StitchModel {
         }
     }
 
+    // Any change to the list ends what the full card and a removal's Undo describe.
     private func clearResult() {
         if !isEncoding {
             state = .idle
+        }
+        if removal != nil {
+            notice = nil
         }
     }
 }

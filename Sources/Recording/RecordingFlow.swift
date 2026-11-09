@@ -446,14 +446,14 @@ final class RecordingFlow {
         showPicker()
     }
 
-    // Esc cancels from any app while getting ready. It's left alone while recording, where it may be part of what's
-    // being recorded.
+    // Esc is taken from other apps only while an area is dragged out. Once the bar is up, the app to be recorded is in
+    // front and needs its own Esc, so the bar's Cancel backs out instead.
+    var takesEscape: Bool {
+        state == .selectingArea
+    }
+
     func updateEscapeKey() {
-        let gettingReady = switch state {
-        case .ready, .selectingArea: true
-        default: false
-        }
-        if gettingReady, model?.useGlobalShortcuts == true {
+        if takesEscape, model?.useGlobalShortcuts == true {
             _ = escapeKey.register([.init(keyCode: kVK_Escape, modifiers: 0, label: "Esc") { [weak self] in self?.escapePressed() }])
         } else {
             escapeKey.unregister()
@@ -461,10 +461,8 @@ final class RecordingFlow {
     }
 
     func escapePressed() {
-        switch state {
-        case .ready: cancelReady()
-        case .selectingArea: overlays.cancelAreaSelection()
-        default: break
+        if state == .selectingArea {
+            overlays.cancelAreaSelection()
         }
     }
 

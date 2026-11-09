@@ -26,6 +26,9 @@ struct ScreenStitchApp: App {
             CommandGroup(after: .newItem) {
                 FileCommands(model: appDelegate.model)
             }
+            CommandGroup(after: .pasteboard) {
+                EditCommands(model: appDelegate.model)
+            }
             CommandMenu("Record") {
                 RecordCommands(model: appDelegate.model)
             }
@@ -46,12 +49,25 @@ struct FileCommands: View {
         Button("Add Videos…") { model.chooseFiles() }
             .keyboardShortcut("o")
             .disabled(busy)
+        Toggle("Watch for Recordings", isOn: Binding(get: { model.isWatching }, set: { $0 ? model.startWatching() : model.stopWatching() }))
+            .disabled(model.tools == nil)
         Divider()
         Button("Sort by Date") { model.sortByDate() }
             .disabled(busy || model.clips.count < 2)
         Button("Clear Session") { model.clearSession() }
             .keyboardShortcut("n")
-            .disabled(busy || (model.clips.isEmpty && model.state == .idle))
+            .disabled(busy || (model.clips.isEmpty && model.state == .idle && model.savedVideos.isEmpty))
+    }
+}
+
+struct EditCommands: View {
+    let model: StitchModel
+
+    var body: some View {
+        Divider()
+        Button("Move to Trash") { model.trashItems(model.selection) }
+            .keyboardShortcut(.delete, modifiers: .command)
+            .disabled(model.isEncoding || model.recording.isRecording || !model.selectionHasClips)
     }
 }
 

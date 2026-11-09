@@ -15,7 +15,13 @@ struct ContentView: View {
                     Button("Quit & Reopen") { model.relaunch() }
                 }
             } else if model.clips.isEmpty {
-                EmptyStateView()
+                if model.isRestoringSlowly {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if !model.isRestoring {
+                    EmptyStateView()
+                }
             } else {
                 ClipList()
             }
@@ -78,7 +84,7 @@ struct ContentView: View {
         } isTargeted: { targeted in
             model.isDropTargeted = targeted && !model.isEncoding
         }
-        // The start screen has its own buttons for all of this, so the toolbar waits until there's a clip.
+        // The toolbar waits until there's a clip. Before then, the start screen and the File menu offer the same things.
         .toolbar {
             let locked = model.isEncoding || model.tools == nil
             if !model.clips.isEmpty {
@@ -103,13 +109,12 @@ struct ContentView: View {
     }
 }
 
-// Recording is the main use, so it gets the one big button. The alternatives are plain buttons whose details live in
-// their tooltips, and where recordings go is a quiet footer.
+// Recording is the main use, so it gets the one big button. Adding videos is a plain button, and where recordings go is
+// a quiet footer. Watch for Recordings is in the File menu.
 struct EmptyStateView: View {
     @Environment(StitchModel.self) private var model
 
     var body: some View {
-        let watched = (model.watchFolder ?? StitchModel.screenshotFolder()).lastPathComponent
         VStack(spacing: 0) {
             Spacer()
             VStack(spacing: 8) {
@@ -151,18 +156,10 @@ struct EmptyStateView: View {
             .padding(.top, 40)
             .padding(.bottom, 16)
 
-            HStack(spacing: 12) {
-                Button { model.isWatching ? model.stopWatching() : model.startWatching() } label: {
-                    Label(model.isWatching ? "Stop Watching" : "Watch for Recordings", systemImage: "eye")
-                }
-                .help(model.isWatching
-                    ? "Stop adding new recordings from \(watched)"
-                    : "Add recordings from the macOS Screenshot toolbar as soon as they're saved to \(watched)")
-                Button { model.chooseFiles() } label: {
-                    Label("Add Videos…", systemImage: "plus")
-                }
-                .help("Add existing video files")
+            Button { model.chooseFiles() } label: {
+                Label("Add Videos…", systemImage: "plus")
             }
+            .help("Add existing video files")
             .controlSize(.large)
             Text("You can also drop video files anywhere in this window.")
                 .font(.caption)

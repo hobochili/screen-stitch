@@ -40,17 +40,19 @@ import Testing
         #expect(names(model.quickLookItems) == ["Clip 1.mov"])
     }
 
-    @Test func removedClipsLeaveTheSelection() {
+    @Test func removingTheSelectedClipSelectsTheNextOne() {
         let model = session(3)
         model.selection = [model.clips[1].id]
-        model.remove(model.clips[1])
-        #expect(model.selection.isEmpty)
+        model.remove([model.clips[1].id])
+        #expect(names(model.quickLookItems) == ["Clip 3.mov"])
+        model.remove([model.clips[1].id])
+        #expect(names(model.quickLookItems) == ["Clip 1.mov"])
     }
 
     @Test func keepingFilesEmptiesTheSessionAndTrashesNothing() {
         let model = session(2)
         var trashed: [URL] = []
-        model.moveToTrash = { trashed.append($0) }
+        model.moveToTrash = { trashed.append($0); return nil }
         model.state = .done(output: URL(fileURLWithPath: "/tmp/out.mp4"), outputBytes: 1, inputBytes: 2)
         model.outputThumbnail = NSImage(size: CGSize(width: 16, height: 9))
         model.clearSession(.keepFiles)
@@ -67,7 +69,7 @@ import Testing
         let model = session(2)
         model.sessionOutputs = [output]
         var trashed: [URL] = []
-        model.moveToTrash = { trashed.append($0) }
+        model.moveToTrash = { trashed.append($0); return nil }
         model.clearSession(.moveClips)
         #expect(names(trashed) == ["Clip 1.mov", "Clip 2.mov"])
         #expect(model.clips.isEmpty)
@@ -82,7 +84,7 @@ import Testing
         let model = session(1)
         model.sessionOutputs = [first, second, folder.file("deleted since.mp4")]
         var trashed: [URL] = []
-        model.moveToTrash = { trashed.append($0) }
+        model.moveToTrash = { trashed.append($0); return nil }
         model.clearSession(.moveEverything)
         #expect(names(trashed) == ["Clip 1.mov", "first.mp4", "second.mp4"])
     }
@@ -91,6 +93,7 @@ import Testing
         let model = session(2)
         model.moveToTrash = { url in
             if url.lastPathComponent == "Clip 2.mov" { throw CocoaError(.fileWriteNoPermission) }
+            return nil
         }
         model.clearSession(.moveClips)
         #expect(model.warning == "Couldn't move to the Trash: Clip 2.mov")
@@ -107,7 +110,7 @@ import Testing
         model.sessionOutputs = [output]
         model.state = .done(output: output, outputBytes: 1, inputBytes: 2)
         let prompt = model.clearPrompt
-        #expect(prompt.offersEverything)
+        #expect(prompt.choices.map(\.label) == ["Keep Files", "Move Clips to Trash", "Move Everything to Trash"])
         #expect(prompt.title == "Clear this session?")
         #expect(prompt.message.contains("4 clips"))
         #expect(prompt.message.contains("including 2 you added from elsewhere"))
@@ -119,7 +122,7 @@ import Testing
         let model = session(3)
         model.sessionRecordings = Set(model.clips.map(\.url))
         let prompt = model.clearPrompt
-        #expect(!prompt.offersEverything)
+        #expect(prompt.choices.map(\.label) == ["Keep Files", "Move Clips to Trash"])
         #expect(prompt.title.contains("without combining its 3 clips"))
         #expect(!prompt.message.contains("elsewhere"))
         #expect(!prompt.message.contains("Move Everything"))

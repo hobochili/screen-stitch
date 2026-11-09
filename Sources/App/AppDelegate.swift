@@ -6,7 +6,7 @@ import Quartz
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = StitchModel()
     private var terminationSignal: DispatchSourceSignal?
-    private var spaceMonitor: Any?
+    private var keyMonitor: Any?
 
     func application(_ application: NSApplication, open urls: [URL]) {
         model.add(urls)
@@ -22,11 +22,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Space opens Quick Look from anywhere in the main window, not only when the list has focus, unless text is
-        // being typed.
-        spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [model] event in
+        // being typed. ⌘Delete in a title card's text deletes to the start of the line, as in any text field, instead
+        // of moving the selected clips to the Trash.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [model] event in
             let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-            guard Int(event.keyCode) == kVK_Space, modifiers.isEmpty, let window = event.window,
-                  window.identifier?.rawValue == "main", !(window.firstResponder is NSText) else { return event }
+            guard let window = event.window, window.identifier?.rawValue == "main" else { return event }
+            if Int(event.keyCode) == kVK_Delete, modifiers == .command, let text = window.firstResponder as? NSTextView {
+                MainActor.assumeIsolated { text.deleteToBeginningOfLine(nil) }
+                return nil
+            }
+            guard Int(event.keyCode) == kVK_Space, modifiers.isEmpty, !(window.firstResponder is NSText) else { return event }
             return MainActor.assumeIsolated { model.toggleQuickLook() } ? nil : event
         }
 
@@ -38,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         terminationSignal?.resume()
 
         model.updateGlobalShortcuts()
-        Task { await model.restoreSession() }
+        model.restoreSession()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

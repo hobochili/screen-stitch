@@ -1,18 +1,18 @@
 # User guide
 
 [Recording](#recording) · [Shortcuts](#shortcuts) · [Adding clips](#adding-clips-you-already-have) ·
-[Arranging clips](#arranging-clips) · [Title cards](#title-cards) · [Combining](#combining) ·
-[Starting over](#starting-over) · [Troubleshooting](#troubleshooting)
+[Arranging clips](#arranging-clips) · [Removing clips](#removing-clips) · [Title cards](#title-cards) ·
+[Combining](#combining) · [Starting over](#starting-over) · [Troubleshooting](#troubleshooting)
 
 A **session** is the clips in the list plus the video you save from them. Record or add clips, put them in order, then
 combine them. When you're done, click **Clear Session** to start the next one. Screen Stitch keeps your session between
 launches (see [Starting over](#starting-over)).
 
-Before you have any clips, the window shows a big red **Record Screen** button, with **Watch for Recordings** and
-**Add Videos…** below it. After that, it shows the list of clips. **Title Cards**, **Sort by Date** and
-**Clear Session** are in the header above the list, and **Record Another** is just below it. The bottom bar, along the
-bottom of the window, is where you choose **Resolution** and **Quality** and combine the clips. The toolbar at the top
-has **Record Microphone**, **Watch for Recordings** and **Add Videos…**.
+Before you have any clips, the window shows a big red **Record Screen** button, with **Add Videos…** below it. After
+that, it shows the list of clips. **Title Cards**, **Sort by Date** and **Clear Session** are in the header above the
+list, and **Record Another** is just below it. The bottom bar, along the bottom of the window, is where you choose
+**Resolution** and **Quality** and combine the clips. The toolbar at the top has **Record Microphone**,
+**Watch for Recordings** and **Add Videos…**. Until you have a clip, **Watch for Recordings** is only in the File menu.
 
 ## Recording
 
@@ -30,7 +30,7 @@ it up.
 
 - The bar has a **Start** button. An area has one below it too, and so does a window when there's room.
 - You can still move and resize an area: drag inside it, or drag an edge or corner.
-- **Change…** picks something else, and **Cancel** (or Esc) backs out.
+- **Change…** picks something else, and **Cancel** backs out. Esc doesn't: it goes to the app you're about to record.
 - Drag the bar by its label to move it.
 - The microphone button turns your voice on or off.
 
@@ -76,7 +76,7 @@ folder.
 | :--- | :--- |
 | ⌃⌥R | From any app: each press opens the floating bar, then starts recording, then stops it |
 | ⌃⌥S | From any app: brings Screen Stitch to the front |
-| Esc | From any app, until recording starts: cancels the floating bar or the area selector |
+| Esc | From any app, while you drag out an area: cancels the area selector |
 | ⌘R | **Record Screen**, or **Stop Recording** while you record |
 | ⇧⌘R | **Record Something Else…** |
 | ⌘O | **Add Videos…** |
@@ -84,24 +84,25 @@ folder.
 | ⌘N | **Clear Session** |
 | ⌘, | Settings |
 
-⌃⌥R opens the sheet instead of the bar when there's nothing to reuse. Once you're recording, Esc goes to the app you're
-recording as usual.
+⌃⌥R opens the sheet instead of the bar when there's nothing to reuse. Once the floating bar is up, Esc goes to the app
+you're recording as usual, so use the bar's **Cancel** to back out.
 
 The "From any app" shortcuts work whenever Screen Stitch is open, even when it's hidden. They can't launch Screen
 Stitch, though. To open it with a key, use the Shortcuts app's **Open App** action with a keyboard shortcut.
 
 To change ⌃⌥R or ⌃⌥S, open Settings, click the shortcut and press the new keys (Esc cancels). A shortcut needs a key
 plus at least two of ⌃ ⌥ ⇧ ⌘. A function key (F1–F20) works with or without ⌃ ⌥ ⇧ ⌘. **Use Defaults** restores both.
-Turn off **Use from any app** to disable both shortcuts and the Esc cancel.
+Turn off **Use from any app** to disable both shortcuts and the Esc that cancels the area selector.
 
 ## Adding clips you already have
 
 - Click **Add Videos…** (⌘O) or drop video files on the window or the Dock icon. Anything that isn't a readable video
   is skipped, with a warning.
-- Click **Watch for Recordings** to pick up recordings from the macOS Screenshot toolbar (⇧⌘5). Each one is added as
-  soon as it finishes. Screen Stitch watches the folder the toolbar saves to (its Options › Save to setting, which is
-  the Desktop unless you've changed it) and ignores videos already there. While it watches, the bottom bar has
-  **Change…** to watch a different folder and **Stop Watching**.
+- Choose **Watch for Recordings** in the File menu, or click it in the toolbar once you have clips, to pick up
+  recordings from the macOS Screenshot toolbar (⇧⌘5). The list can be empty. Each recording is added as soon as it
+  finishes. Screen Stitch watches the folder the toolbar saves to (its Options › Save to setting, which is
+  the Desktop unless you've changed it) and ignores videos already there. While it watches, the bottom bar says "Watching
+  Desktop for new screen recordings" and has **Change…** to watch a different folder and **Stop Watching**.
 
 ## Arranging clips
 
@@ -109,7 +110,21 @@ Turn off **Use from any app** to disable both shortcuts and the Esc cancel.
   the video follows the list from top to bottom. **Sort by Date** puts the clips back in recording order.
 - Click a thumbnail to play that clip in Quick Look. Or select rows and press Space, as in the Finder: ⌘-click or
   ⇧-click to select several, and ↑ and ↓ to move. While Quick Look is open, ↑ and ↓ switch clips.
-- Click a row's ⓧ to take it out of the list. That doesn't delete its file. Right-click a row for **Show in Finder**.
+- Right-click a row for **Preview**, **Show in Finder**, **Remove from List** and **Move to Trash**. If the row is one of
+  several selected, the menu acts on all of them. See [Removing clips](#removing-clips).
+
+## Removing clips
+
+Click a row's ⓧ, select rows and press Delete (⌫), or choose **Remove from List** in the row's menu. The clips leave the
+list, but their files stay where they are. The bottom bar says what was removed and offers **Undo**. It also offers
+**Move to Trash** when every removed clip was recorded in Screen Stitch this session.
+
+**Move to Trash** (⌘⌫, the row's menu or the Edit menu) moves the clips' files to the Trash and takes their rows out of
+the list. A clip recorded in this session goes straight away. A video you added from elsewhere asks first, since Screen
+Stitch didn't make it. **Remove from List** is the default choice there.
+
+After that, **Put Back** in the bottom bar brings the files and their rows back. **Undo** and **Put Back** last until
+the message fades (about 8 seconds) or the list changes. After that, use **Put Back** in the Finder's Trash.
 
 ## Title cards
 
@@ -138,6 +153,11 @@ When it's done, the bottom bar shows the saved video and its size compared with 
 **Open** and **Share…**. **Share…** opens the macOS share menu. You can also drag the video's thumbnail into Mail,
 Messages, a Finder window or any other app that takes files.
 
+That card stays until you change the list. Then a smaller **Saved** line takes its place, with the video's name, size
+and time, plus **Show in Finder**, **Open** and **Share…**. You can drag the name out like the thumbnail. If you've saved
+several videos in this session, the line says "2 videos saved" instead. Click it to pick which video the line shows. A
+saved video you delete or move in the Finder drops off the line.
+
 > [!TIP]
 > With two or more clips that all have the same size and format, an arrow next to **Combine & Compress…** offers
 > **Combine Without Compressing…**. It joins the clips as they are, so it's much faster and loses no quality, but the
@@ -148,11 +168,10 @@ Messages, a Finder window or any other app that takes files.
 
 Your session is saved as you go, so closing the window or quitting doesn't lose it. The next time you open Screen
 Stitch, the clips, title cards and order are back. A clip that was moved or deleted, or can't be read any more, is left
-out, and a warning names it. The card for the video you saved isn't brought back yet, but **Move Everything to Trash**
-below still finds videos saved before you quit.
+out, and a warning names it. The **Saved** line for your videos comes back too, but the full card doesn't.
 
-Click **Clear Session** (⌘N) to empty the list and begin a new session. It's in the list header, and in the bottom bar
-once you've saved the video. Screen Stitch asks what to do with the files first:
+Click **Clear Session** (⌘N) to empty the list and begin a new session. It's in the list header, and on the
+saved-video card. Screen Stitch asks what to do with the files first:
 
 | Choice | What happens |
 | :--- | :--- |
@@ -161,7 +180,8 @@ once you've saved the video. Screen Stitch asks what to do with the files first:
 | **Move Everything to Trash** | The clips go to the Trash, along with any video you saved in this session that's still where you saved it. It's only offered when there is one. |
 | **Cancel** | Nothing changes. |
 
-Nothing else is touched, and you can put anything back from the Trash.
+If the list is empty but you saved videos in this session, the choices are **Keep Files** and **Move Video to Trash**
+(**Move Videos to Trash** for several). Nothing else is touched, and you can put anything back from the Trash.
 
 ## Troubleshooting
 

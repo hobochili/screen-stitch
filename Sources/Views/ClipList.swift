@@ -20,6 +20,8 @@ struct ClipList: View {
                 }
                 .onMove { model.move(from: $0, to: $1) }
             }
+            // Delete removes the selected rows from the list, and ⌘Delete (in the Edit menu) moves clips to the Trash.
+            .onDeleteCommand { model.remove(model.selection) }
             .disabled(model.isEncoding)
             Divider()
             RecordAnotherBar()
@@ -247,7 +249,7 @@ struct TitleCardRow: View {
             .fixedSize()
             .help("White text on black, or black text on white")
             Button {
-                model.remove(item: card.id)
+                model.remove([card.id])
             } label: {
                 Image(systemName: "xmark.circle.fill")
             }
@@ -257,7 +259,7 @@ struct TitleCardRow: View {
         }
         .padding(.vertical, 4)
         .contextMenu {
-            Button("Remove from List") { model.remove(item: card.id) }
+            Button("Remove from List") { model.remove(model.targets(for: card.id)) }
         }
     }
 }
@@ -305,7 +307,7 @@ struct ClipRow: View {
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 64, alignment: .trailing)
             Button {
-                model.remove(clip)
+                model.remove([clip.id])
             } label: {
                 Image(systemName: "xmark.circle.fill")
             }
@@ -315,9 +317,14 @@ struct ClipRow: View {
         }
         .padding(.vertical, 4)
         .contextMenu {
+            let targets = model.targets(for: clip.id)
             Button("Preview") { model.preview(clip) }
-            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([clip.url]) }
-            Button("Remove from List") { model.remove(clip) }
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting(model.clips.filter { targets.contains($0.id) }.map(\.url))
+            }
+            Divider()
+            Button("Remove from List") { model.remove(targets) }
+            Button("Move to Trash") { model.trashItems(targets) }
         }
     }
 }
