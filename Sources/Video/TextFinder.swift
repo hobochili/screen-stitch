@@ -769,11 +769,11 @@ private final class ExitStatus: @unchecked Sendable {
 
     func wait() async -> Int32 {
         await withCheckedContinuation { continuation in
-            let status: Int32? = lock.withLock {
-                if status == nil { waiting = continuation }
-                return status
+            let finished: Int32? = lock.withLock {
+                if self.status == nil { self.waiting = continuation }
+                return self.status
             }
-            if let status { continuation.resume(returning: status) }
+            if let finished { continuation.resume(returning: finished) }
         }
     }
 }
