@@ -2,7 +2,8 @@
 
 [Recording](#recording) · [Shortcuts](#shortcuts) · [Adding clips](#adding-clips-you-already-have) ·
 [Arranging clips](#arranging-clips) · [Removing clips](#removing-clips) · [Title cards](#title-cards) ·
-[Combining](#combining) · [Starting over](#starting-over) · [Troubleshooting](#troubleshooting)
+[Redacting text](#redacting-text) · [Combining](#combining) · [Starting over](#starting-over) ·
+[Troubleshooting](#troubleshooting)
 
 A **session** is the clips in the list plus the video you save from them. Record or add clips, put them in order, then
 combine them. When you're done, click **Clear Session** to start the next one. Screen Stitch keeps your session between
@@ -110,8 +111,9 @@ Turn off **Use from any app** to disable both shortcuts and the Esc that cancels
   the video follows the list from top to bottom. **Sort by Date** puts the clips back in recording order.
 - Click a thumbnail to play that clip in Quick Look. Or select rows and press Space, as in the Finder: ⌘-click or
   ⇧-click to select several, and ↑ and ↓ to move. While Quick Look is open, ↑ and ↓ switch clips.
-- Right-click a row for **Preview**, **Show in Finder**, **Remove from List** and **Move to Trash**. If the row is one of
-  several selected, the menu acts on all of them. See [Removing clips](#removing-clips).
+- Right-click a row for **Preview**, **Show in Finder**, **Remove from List** and **Move to Trash**. If the row is one
+  of several selected, **Show in Finder**, **Remove from List** and **Move to Trash** act on all of them. See
+  [Removing clips](#removing-clips).
 
 ## Removing clips
 
@@ -139,6 +141,48 @@ or **Light**. In the video, it fills the frame with large, centered text and has
 
 Title cards aren't files, so they don't survive **Clear Session**.
 
+## Redacting text
+
+To redact something from the video, such as the last four digits of a card, click **Redact Text…** in the list header
+(or choose it in the Edit menu). A small sheet opens. Type the text and click **Add** (or press Return). Pasting several
+lines adds each one. Screen Stitch then looks through every clip for it, even as the page scrolls, and covers each place
+it finds with a solid black box when you combine.
+
+The boxes are permanent in the saved video. The covered pixels are replaced, not overlaid, so no one can remove a box to
+see what was under it. Your original recordings are unchanged, so share only the saved video.
+
+The sheet lists your text with a checkbox on each. A checked entry is redacted, and the status beside it says how often
+it was found. Uncheck an entry to stop redacting it for now, or click ⓧ (**Stop Redacting**) to remove it. Screen Stitch
+remembers the list between sessions, so **Redact Text…** is filled in while anything is checked. The bottom bar shows
+what's redacted, for example "Redacting 9611 and 9820 · Looking through clip 2 of 5…", with **Change…** to reopen the
+sheet.
+
+The search runs by itself in the background, one clip at a time. It takes about half a minute per minute of video, so
+about 10 minutes for 20 minutes, and short clips are quick. It pauses while you record and carries on afterwards, without
+starting over. Screen Stitch remembers the places it found for each text, so it doesn't search a clip again for text it
+has already searched. A new piece of text is searched for in every clip. A clip with text found shows a redaction icon in its row, and pointing at it says where, for example "Redacts
+“9611” in 3 places". The boxes go into the video you save, not into the clip's file, so **Preview** still shows the
+text.
+
+When you click **Combine & Compress…**, Screen Stitch waits for any search still running, then redacts the text and
+compresses. The bottom bar shows each step: "Looking for text to redact", then "Redacting text".
+
+If a clip can't be searched, the list and the bottom bar say "Couldn't search “clip name”". Combining tries the search
+again first. If it still fails, combining stops and the message says to remove the clip or uncheck the text.
+
+Before you share the video, click **Check Redactions…** on the saved-video card (or the link on the **Saved** line). A
+sheet plays the saved video and lists every place text was redacted. Click one, or use the arrows, to play it, and check
+the box covers the text. If you can still read something, click **Still see something?**, then **Redact More Text…**,
+add the text the way it appears, and combine again. That searches every clip for the new text, so it takes a while. If
+you add text after saving, the card is replaced by the compact **Saved** line, which says "This video doesn't redact
+“4242”. Combine again to redact it."
+
+- Type the text as it appears on screen. Capital letters don't matter.
+- Very small text, such as inside a scaled-down picture of another screen, can't be read reliably, so it may not be
+  found.
+- Text in rotated video can't be found yet. Screen Stitch says so instead of skipping the clip.
+- Only what's on screen is redacted. Sound isn't changed.
+
 ## Combining
 
 Choose a **Resolution** and **Quality** in the bottom bar. The defaults suit most videos, and
@@ -162,13 +206,15 @@ saved video you delete or move in the Finder drops off the line.
 > With two or more clips that all have the same size and format, an arrow next to **Combine & Compress…** offers
 > **Combine Without Compressing…**. It joins the clips as they are, so it's much faster and loses no quality, but the
 > file is about as big as the clips put together. Recordings of the same window or area usually qualify, as long as the
-> microphone was on for all of them or off for all of them. The option disappears while the list has title cards.
+> microphone was on for all of them or off for all of them. The option disappears while the list has title cards. If you
+> have [text to redact](#redacting-text), it waits until the search shows the text isn't in any clip.
 
 ## Starting over
 
 Your session is saved as you go, so closing the window or quitting doesn't lose it. The next time you open Screen
-Stitch, the clips, title cards and order are back. A clip that was moved or deleted, or can't be read any more, is left
-out, and a warning names it. The **Saved** line for your videos comes back too, but the full card doesn't.
+Stitch, the clips, the text to redact, the title cards and the order are back. A clip that was moved or deleted, or can't
+be read any more, is left out, and a warning names it. The **Saved** line for your videos comes back too, but the full
+card doesn't.
 
 Click **Clear Session** (⌘N) to empty the list and begin a new session. It's in the list header, and on the
 saved-video card. Screen Stitch asks what to do with the files first:

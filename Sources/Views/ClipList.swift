@@ -47,6 +47,7 @@ struct ClipListHeader: View {
             }
             .fixedSize()
             .help("Add text shown between clips in the combined video")
+            HideTextButton()
             Button("Sort by Date") { model.sortByDate() }
                 .disabled(model.isDateOrdered || model.clips.count < 2)
                 .help("Put the clips back in the order they were recorded")
@@ -57,6 +58,28 @@ struct ClipListHeader: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .disabled(model.isEncoding || model.recording.isRecording)
+    }
+}
+
+// Shows plainly when text is being hidden, so a list remembered from an earlier session isn't forgotten.
+struct HideTextButton: View {
+    @Environment(StitchModel.self) private var model
+
+    var body: some View {
+        if model.activeHiddenText.isEmpty {
+            Button { model.showsHideTextList = true } label: {
+                Label("Redact Text…", systemImage: "text.redaction")
+            }
+            .fixedSize()
+            .help("Redact text, such as card digits, everywhere it appears in the video")
+        } else {
+            Button { model.showsHideTextList = true } label: {
+                Label("Redact Text…", systemImage: "text.redaction")
+            }
+            .buttonStyle(.borderedProminent)
+            .fixedSize()
+            .help(model.hidingLine ?? "")
+        }
     }
 }
 
@@ -292,6 +315,20 @@ struct ClipRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
+            if model.textSearches[clip.url]?.isBusy == true {
+                ProgressView()
+                    .controlSize(.small)
+                    .help("Looking for text to redact")
+            } else if !model.hiddenPlaces(in: clip).isEmpty {
+                Button {
+                    model.showsHideTextList = true
+                } label: {
+                    Image(systemName: "text.redaction")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help(model.hiddenTooltip(for: clip))
+            }
             if clip.audioStreams > 0 {
                 Image(systemName: "speaker.wave.2")
                     .foregroundStyle(.secondary)

@@ -69,6 +69,19 @@ struct ContentView: View {
             TargetPicker()
                 .environment(model)
         }
+        .sheet(isPresented: Binding(get: { model.showsHideTextList }, set: { model.showsHideTextList = $0 })) {
+            HideTextListSheet()
+                .environment(model)
+        }
+        .sheet(item: Binding(get: { model.hiddenTextReview }, set: { if $0 == nil { model.closeHiddenTextReview() } }), onDismiss: {
+            if model.opensHideTextListAfterReview {
+                model.opensHideTextListAfterReview = false
+                model.showsHideTextList = true
+            }
+        }) { review in
+            HiddenTextReviewSheet(review: review)
+                .environment(model)
+        }
         .overlay {
             if model.isDropTargeted {
                 RoundedRectangle(cornerRadius: 12)

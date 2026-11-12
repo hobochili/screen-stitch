@@ -67,8 +67,8 @@ the script gives up after about 10 seconds. Close it and run the command again.
 
 ## Learn more
 
-- **[User guide](docs/guide.md)**: recording, shortcuts, adding and arranging clips, title cards, combining and
-  troubleshooting.
+- **[User guide](docs/guide.md)**: recording, shortcuts, adding and arranging clips, title cards, redacting text,
+  combining and troubleshooting.
 - **[How it works](docs/how-it-works.md)**: how clips are ordered, sized and encoded, plus the command line.
 - **[Development](docs/development.md)**: building without Xcode, signing and running the tests.
 

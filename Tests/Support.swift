@@ -7,9 +7,16 @@ enum TestRunner {
     // The app's settings go to a throwaway domain, removed when the run ends, instead of the runner's own, and the
     // session isn't saved unless a test says where.
     static func main() async {
+        // TextFinder runs this executable as its workers, as it does the app.
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first == "--find-text" {
+            TextFinder.runAsWorker(Array(arguments.dropFirst()))
+        }
         UserDefaults.standard.removePersistentDomain(forName: "local.screen-stitch.tests")
         StitchModel.defaults = UserDefaults(suiteName: "local.screen-stitch.tests")!
         SavedSession.defaultFile = nil
+        StitchModel.hiddenTextDefaults = nil
+        TextSearch.cacheFolder = nil
         atexit { UserDefaults.standard.removePersistentDomain(forName: "local.screen-stitch.tests") }
         await Testing.__swiftPMEntryPoint() as Never
     }

@@ -49,16 +49,28 @@ bigger file.
 - If any clip has audio, clips without it get silence. If none do, the video has no audio track.
 - A clip with several audio tracks has them mixed into one.
 
+Text to redact is found before FFmpeg starts. Screen Stitch splits each clip into 20-second chunks and hands them to up
+to 8 worker processes, the app run again with `--find-text`. Each worker reads a frame every half second and whenever the
+picture changes a lot, then re-reads the places it found more carefully until nothing new turns up. The places are kept
+per text in `~/Library/Caches/Screen Stitch/Redactions`, so a relaunch doesn't search again. The cache key includes a
+version number, and a clip is searched again if its file changes. Rotated video isn't searched, and combining stops with a
+message. Only clips where text was found are rewritten, using AVFoundation. The boxes are drawn into the decoded
+frames before they're re-encoded, so no original pixels remain under them. They can't be recovered from the saved video.
+The sound is copied as it is. FFmpeg then compresses those copies like any other clip, and Screen Stitch deletes them
+afterwards. The original clips are never modified.
+
 **Combine Without Compressing…** copies each clip's video and audio as they are (H.264 or HEVC, with AAC) into an MP4,
-so none of this applies to it.
+so none of this applies to it. With text to redact, it's offered only once the search shows the text isn't in any clip,
+since the boxes have to be drawn into the video.
 
 ## Saved session
 
 Screen Stitch writes the session to `~/Library/Application Support/Screen Stitch/session.json` whenever it changes, and
-reads it back on the next launch. It holds the clip list in order, the title cards with their text, length and style,
-whether you've reordered by hand (see [Order](#order)), which clips were recorded in the session and the videos saved
-from it. Clips are files, so only their paths are saved. Each is read again on launch, and any that were moved, deleted
-or can't be read are left out with a warning. **Clear Session** empties the file.
+reads it back on the next launch. It holds the clip list in order, the title cards with their text, length and
+style, whether you've reordered by hand (see [Order](#order)), which clips were recorded in the session and the videos
+saved from it, with the text each one redacted and where. The list of text to redact isn't in this file. It's kept in
+the app's settings. Clips are files, so only their paths are saved. Each is read again on launch, and any that were
+moved, deleted or can't be read are left out with a warning. **Clear Session** empties the file.
 
 ## Command line
 
@@ -73,5 +85,6 @@ The same app runs without a window:
 - Inputs are combined in recording order (see [Order](#order)), whatever order you list them in. Unreadable inputs are
   skipped.
 - An existing `OUTPUT.mp4` is overwritten.
+- Text redaction isn't available here. The command line never redacts text.
 - The path above is where `./build.sh --install` puts the app by default. For a plain `./build.sh`, use
   `build/Screen Stitch.app/Contents/MacOS/ScreenStitch`.

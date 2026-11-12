@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         model.updateGlobalShortcuts()
         model.restoreSession()
+        DispatchQueue.global(qos: .utility).async { StitchModel.removeLeftoverRedactionFiles() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

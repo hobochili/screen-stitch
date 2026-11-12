@@ -38,6 +38,7 @@ final class StitchModel {
                 QLPreviewPanel.shared().reloadData()
             }
             scheduleSave()
+            scheduleSearchUpdate()
         }
     }
     var clips: [Clip] { items.compactMap(\.clip) }
@@ -155,6 +156,34 @@ final class StitchModel {
         didSet { StitchModel.defaults.set(recordingsFolder.path, forKey: "recordingsFolder") }
     }
 
+    // Where the Redact Text list is remembered. Tests keep theirs to themselves.
+    nonisolated(unsafe) static var hiddenTextDefaults: UserDefaults? = .standard
+    var hiddenText: [HiddenTextEntry] = StitchModel.hiddenTextDefaults?.data(forKey: "hiddenText")
+        .flatMap { try? JSONDecoder().decode([HiddenTextEntry].self, from: $0) } ?? [] {
+        didSet {
+            if let data = try? JSONEncoder().encode(hiddenText) {
+                StitchModel.hiddenTextDefaults?.set(data, forKey: "hiddenText")
+            }
+            clearResult()
+            textSearches.values.forEach { $0.forgetFailure() }
+            scheduleSearchUpdate()
+        }
+    }
+    // Searches for hidden text, by clip file.
+    var textSearches: [URL: TextSearch] = [:]
+    // What each saved video hid, so it can be checked, and the ones that have been.
+    var hiddenRecords: [URL: HiddenRecord] = [:] {
+        didSet { scheduleSave() }
+    }
+    var checkedVideos: Set<URL> = []
+    var showsHideTextList = false
+    var hiddenTextDraft = ""
+    var hiddenTextReview: HiddenTextReview?
+    // Set by the review's Redact More Text…, which opens the list once the review has closed.
+    var opensHideTextListAfterReview = false
+    // What an export is doing before FFmpeg starts, such as covering hidden text.
+    private(set) var encodeStep: String?
+
     private var probing: Set<URL> = []
     private var isManuallyOrdered = false {
         didSet { scheduleSave() }
@@ -167,11 +196,18 @@ final class StitchModel {
     @ObservationIgnored private var startedAt = Date()
     @ObservationIgnored private var cancelled = false
     @ObservationIgnored private var activity: NSObjectProtocol?
+    @ObservationIgnored private var coverStop: CancelFlag?
+    @ObservationIgnored private var pendingRecord: HiddenRecord?
+    // Covered copies made for the export in progress, deleted if it stops before FFmpeg takes them over.
+    @ObservationIgnored private var coverCopies: [URL] = []
+    // Where FFmpeg's share of the progress bar starts, after searching and covering.
+    @ObservationIgnored private var progressBase = 0.0
+    @ObservationIgnored private var searchUpdatePending = false
     var isProbing: Bool { !probing.isEmpty }
     var isWatching: Bool { watchFolder != nil }
     var hasBottomBar: Bool {
         !clips.isEmpty || isWatching || warning != nil || notice != nil || state != .idle || recording.isCapturing
-            || !savedVideos.isEmpty
+            || !savedVideos.isEmpty || !activeHiddenText.isEmpty
     }
 
     // Every video saved this session that's still there, newest first. Unlike existingOutputs, this includes one added
@@ -210,7 +246,7 @@ final class StitchModel {
     }
 
     var progressText: String {
-        let percent = "\(Int(progress * 100))%"
+        let percent = (encodeStep.map { "\($0) · " } ?? "") + "\(Int(progress * 100))%"
         guard progress > 0.02 else { return percent }
         let remaining = Date().timeIntervalSince(startedAt) / progress * (1 - progress)
         return remaining < 60 ? "\(percent) · under a minute left" : "\(percent) · about \(Int((remaining / 60).rounded())) min left"
@@ -273,6 +309,17 @@ final class StitchModel {
         }
     }
 
+    private func scheduleSearchUpdate() {
+        guard !searchUpdatePending else { return }
+        searchUpdatePending = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                self?.searchUpdatePending = false
+                self?.updateSearches()
+            }
+        }
+    }
+
     func saveSession() {
         savePending = false
         guard let sessionFile, !isRestoring else { return }
@@ -285,7 +332,8 @@ final class StitchModel {
             },
             isManuallyOrdered: isManuallyOrdered,
             recordings: sessionRecordings.sorted { $0.path < $1.path },
-            outputs: sessionOutputs
+            outputs: sessionOutputs,
+            hiddenRecords: Dictionary(uniqueKeysWithValues: hiddenRecords.filter { sessionOutputs.contains($0.key) }.map { ($0.key.path, $0.value) })
         )
         try? saved.save(to: sessionFile)
     }
@@ -328,6 +376,9 @@ final class StitchModel {
         }
         sessionRecordings.formUnion(saved.recordings)
         sessionOutputs = saved.outputs + sessionOutputs.filter { !saved.outputs.contains($0) }
+        for (path, record) in saved.hiddenRecords ?? [:] {
+            hiddenRecords[URL(fileURLWithPath: path)] = record
+        }
         isRestoring = false
         isRestoringSlowly = false
         saveSession()
@@ -885,12 +936,16 @@ final class StitchModel {
     }
 
     func clear() {
+        textSearches.values.forEach { $0.cancel() }
+        textSearches = [:]
         items = []
         thumbnails = [:]
         isManuallyOrdered = false
         warning = nil
         sessionRecordings = []
         sessionOutputs = []
+        hiddenRecords = [:]
+        checkedVideos = []
         shownVideo = nil
     }
 
@@ -1000,9 +1055,10 @@ final class StitchModel {
         !isManuallyOrdered
     }
 
-    // Title cards have to be drawn into the video, so a session with any can't be joined as is.
+    // Title cards and boxes over hidden text have to be drawn into the video, so a session with either can't be joined
+    // as is. Until the search is done, hidden text counts as found.
     var canCombineWithoutCompressing: Bool {
-        titleCards.isEmpty && EncodeJob.canJoin(clips)
+        titleCards.isEmpty && EncodeJob.canJoin(clips) && clips.allSatisfy { hiddenTextTracks(for: $0)?.isEmpty == true }
     }
 
     // Clips whose files were moved, renamed or deleted after they were added, named so they can be found.
@@ -1040,11 +1096,108 @@ final class StitchModel {
     }
 
     func encode(to output: URL, compressing: Bool = true) {
-        guard let tools, !clips.isEmpty, !isEncoding else { return }
+        guard tools != nil, !clips.isEmpty, !isEncoding else { return }
         if let missingClipsProblem {
             state = .failed(missingClipsProblem)
             return
         }
+        let texts = activeHiddenText
+        pendingRecord = texts.isEmpty ? nil : HiddenRecord(texts: texts, places: [])
+        progressBase = 0
+        if compressing, !texts.isEmpty {
+            hideText(texts, thenEncodeTo: output)
+        } else {
+            startFFmpeg(to: output, compressing: compressing)
+        }
+    }
+
+    // Finishes looking for the hidden text, writes a covered copy of each clip it was found in, then encodes with the
+    // copies in place of those clips. Searching, covering and compressing share one progress bar.
+    private func hideText(_ texts: [String], thenEncodeTo output: URL) {
+        let stop = CancelFlag()
+        coverStop = stop
+        cancelled = false
+        progress = 0
+        startedAt = Date()
+        state = .encoding
+        let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Redacting text")
+        // A clip replaced since it was searched is searched again, and one whose search failed gets another try.
+        for clip in clips {
+            textSearches[clip.url]?.checkFile()
+            textSearches[clip.url]?.forgetFailure()
+        }
+        let searchShare = clips.contains(where: needsSearch) ? 0.4 : 0
+        coverCopies = []
+        Task {
+            var covered: [UUID: Clip] = [:]
+            var redacting: String?
+            do {
+                encodeStep = "Looking for text to redact"
+                updateSearches()
+                let total = max(clips.reduce(0) { $0 + $1.duration }, 0.001)
+                while !cancelled, clips.contains(where: needsSearch) {
+                    let left = clips.filter(needsSearch).reduce(0) { $0 + $1.duration }
+                    let current = searchingClip.map { (textSearches[$0.url]?.progress ?? 0) * $0.duration } ?? 0
+                    progress = searchShare * min(max((total - left + current) / total, 0), 1)
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+                if cancelled { throw CancellationError() }
+                if let failed = failedSearchClip, let failure = textSearches[failed.url]?.failure {
+                    throw ProbeError("Couldn't look for text in “\(failed.name)”. \(failure) Remove the clip from the list, or uncheck the text to redact, then combine again.")
+                }
+                var tracks: [UUID: [TextTrack]] = [:]
+                for clip in clips {
+                    guard let found = hiddenTextTracks(for: clip) else { throw CancellationError() }
+                    if !found.isEmpty { tracks[clip.id] = found }
+                }
+                pendingRecord = hiddenRecord(texts: texts, tracks: tracks)
+
+                encodeStep = "Redacting text"
+                let coverShare = tracks.isEmpty ? 0 : 0.2
+                let coverTotal = max(clips.filter { tracks[$0.id] != nil }.reduce(0) { $0 + $1.duration }, 0.001)
+                var done = 0.0
+                for clip in clips {
+                    guard let found = tracks[clip.id] else { continue }
+                    redacting = clip.name
+                    let copy = FileManager.default.temporaryDirectory.appendingPathComponent("screen-stitch-covered-\(UUID().uuidString).mov")
+                    coverCopies.append(copy)
+                    let before = done
+                    try await TextCover.write(clip.url, covering: found, to: copy, progress: { value in
+                        Task { @MainActor in self.progress = searchShare + coverShare * (before + value * clip.duration) / coverTotal }
+                    }, stop: stop)
+                    done += clip.duration
+                    // Read back rather than assumed, since the copy only has the streams AVFoundation could carry over.
+                    guard let tools, let copied = await Prober.probeAll([copy], ffprobe: tools.ffprobe).first?.1 else {
+                        throw ProbeError("Couldn't read “\(clip.name)” after redacting its text.")
+                    }
+                    covered[clip.id] = copied
+                }
+                // Cancel can land while the last copy is finishing.
+                if cancelled { throw CancellationError() }
+                progressBase = searchShare + coverShare
+            } catch {
+                coverCopies.forEach { try? FileManager.default.removeItem(at: $0) }
+                coverCopies = []
+                pendingRecord = nil
+                if cancelled || error is CancellationError {
+                    state = .idle
+                } else {
+                    let place = redacting.map { " in “\($0)”" } ?? ""
+                    state = .failed((error as? ProbeError)?.errorDescription ?? "Couldn't redact the text\(place): \(error.localizedDescription)")
+                }
+            }
+            ProcessInfo.processInfo.endActivity(activity)
+            coverStop = nil
+            encodeStep = nil
+            if state == .encoding {
+                startFFmpeg(to: output, compressing: true, replacing: covered, temporaryFiles: coverCopies)
+                coverCopies = []
+            }
+        }
+    }
+
+    private func startFFmpeg(to output: URL, compressing: Bool, replacing covered: [UUID: Clip] = [:], temporaryFiles copies: [URL] = []) {
+        guard let tools else { return }
         let temporary = FileManager.default.temporaryDirectory
         var job: EncodeJob
         do {
@@ -1054,7 +1207,7 @@ final class StitchModel {
                 let segments: [EncodeJob.Segment] = try items.map { item in
                     switch item {
                     case let .clip(clip):
-                        return .clip(clip)
+                        return .clip(covered[clip.id] ?? clip)
                     case let .card(card):
                         let image = temporary.appendingPathComponent("screen-stitch-card-\(UUID().uuidString).png")
                         guard let data = TitleCardImage.png(card, width: width, height: height) else {
@@ -1066,7 +1219,7 @@ final class StitchModel {
                     }
                 }
                 job = EncodeJob(segments: segments, size: outputSize, quality: quality, output: output)
-                job.temporaryFiles = images
+                job.temporaryFiles = images + copies
             } else {
                 guard canCombineWithoutCompressing else { return }
                 job = EncodeJob(clips: clips, size: outputSize, quality: quality, output: output)
@@ -1076,20 +1229,24 @@ final class StitchModel {
                 job.temporaryFiles = [list]
             }
         } catch {
+            copies.forEach { try? FileManager.default.removeItem(at: $0) }
             state = .failed("Couldn't \(clips.count == 1 ? "compress the clip" : "combine the clips"): \(error.localizedDescription)")
             return
         }
         let run = FFmpegRun()
-        startedAt = Date()
+        if progressBase == 0 {
+            startedAt = Date()
+        }
         do {
             try run.start(
                 ffmpeg: tools.ffmpeg,
                 arguments: job.arguments,
                 duration: job.duration,
-                onProgress: { value in Task { @MainActor in self.progress = value } },
+                onProgress: { value in Task { @MainActor in self.progress = self.progressBase + (1 - self.progressBase) * value } },
                 onExit: { status, errors in Task { @MainActor in self.finish(status: status, errors: errors) } }
             )
         } catch {
+            job.temporaryFiles.forEach { try? FileManager.default.removeItem(at: $0) }
             state = .failed("Couldn't start FFmpeg: \(error.localizedDescription)")
             return
         }
@@ -1098,7 +1255,7 @@ final class StitchModel {
         // Standardizing only strips /private from paths that exist, so do it on the folder.
         seenFiles.insert(output.deletingLastPathComponent().standardizedFileURL.appendingPathComponent(output.lastPathComponent))
         cancelled = false
-        progress = 0
+        progress = progressBase
         state = .encoding
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled],
@@ -1107,12 +1264,15 @@ final class StitchModel {
     }
 
     func cancel() {
-        guard isEncoding, let run else { return }
+        guard isEncoding else { return }
         cancelled = true
-        run.forceStop()
+        coverStop?.set()
+        run?.forceStop()
     }
 
     func abortForQuit() {
+        coverStop?.set()
+        coverCopies.forEach { try? FileManager.default.removeItem(at: $0) }
         guard isEncoding, let run, let job else { return }
         run.forceStopAndWait()
         removePartialOutput(of: job)
@@ -1138,6 +1298,10 @@ final class StitchModel {
             self.activity = nil
         }
 
+        defer {
+            pendingRecord = nil
+            progressBase = 0
+        }
         if cancelled {
             removePartialOutput(of: job)
             state = .idle
@@ -1148,6 +1312,8 @@ final class StitchModel {
             // Saving over an earlier video makes it the newest again.
             sessionOutputs.removeAll { $0 == output }
             sessionOutputs.append(output)
+            hiddenRecords[output] = pendingRecord
+            checkedVideos.remove(output)
             shownVideo = nil
             state = .done(output: job.output, outputBytes: Int64(bytes), inputBytes: clips.reduce(0) { $0 + $1.fileSize })
             NSApp?.requestUserAttention(.informationalRequest)

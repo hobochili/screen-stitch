@@ -113,6 +113,7 @@ final class RecordingFlow {
                 overlays.refreshBar()
                 updateEscapeKey()
                 placePill()
+                model?.updateSearches()
             }
         }
     }

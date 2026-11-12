@@ -37,6 +37,7 @@ struct BottomBar: View {
                 }
                 .font(.caption)
             }
+            HidingTextLine()
             if let warning = model.warning {
                 Label {
                     Text(verbatim: warning)
@@ -118,6 +119,27 @@ struct BottomBar: View {
     }
 }
 
+// What the Redact Text list is redacting, and how the search is going. The icon is in the accent color, so a list
+// remembered from an earlier session is hard to miss.
+struct HidingTextLine: View {
+    @Environment(StitchModel.self) private var model
+
+    var body: some View {
+        if let line = model.hidingLine {
+            HStack(spacing: 6) {
+                Image(systemName: "text.redaction")
+                    .foregroundStyle(Color.accentColor)
+                Text(verbatim: line)
+                    .foregroundStyle(.secondary)
+                Button("Change…") { model.showsHideTextList = true }
+                    .linkButton()
+                    .disabled(model.isEncoding)
+            }
+            .font(.caption)
+        }
+    }
+}
+
 // Every video saved this session, once the full card has gone: the newest, or the one picked from the menu when there
 // are several. The name can be dragged out, like the card's thumbnail.
 struct SavedVideosLine: View {
@@ -159,8 +181,17 @@ struct SavedVideosLine: View {
                     .linkButton()
                 ShareLink(item: video) { Text("Share…") }
                     .linkButton()
+                if model.hiddenRecord(for: video)?.places.isEmpty == false {
+                    Button("Check Redactions…") { model.checkHiddenText(in: video) }
+                        .linkButton()
+                }
             }
             .font(.caption)
+            if let note = model.staleNote(for: video) {
+                Text(verbatim: note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -212,14 +243,35 @@ struct StatusView: View {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                     }
+                    if let summary = model.hiddenSummary(for: output) {
+                        Text(verbatim: summary)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    // Checking hidden text is the next step until it's been done. Sharing isn't held back.
+                    let needsCheck = model.hiddenRecord(for: output)?.places.isEmpty == false
+                        && !model.checkedVideos.contains(output.standardizedFileURL)
                     HStack(spacing: 8) {
                         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([output]) }
                         Button("Open") { NSWorkspace.shared.open(output) }
                         ShareLink(item: output) { Text("Share…") }
                         Spacer(minLength: 16)
-                        Button("Clear Session") { model.clearSession() }
-                            .buttonStyle(.borderedProminent)
-                            .help("Start a new session. You can choose to move its files to the Trash.")
+                        if model.hiddenRecord(for: output)?.places.isEmpty == false {
+                            if needsCheck {
+                                Button("Check Redactions…") { model.checkHiddenText(in: output) }
+                                    .buttonStyle(.borderedProminent)
+                            } else {
+                                Button("Check Redactions…") { model.checkHiddenText(in: output) }
+                            }
+                        }
+                        if needsCheck {
+                            Button("Clear Session") { model.clearSession() }
+                                .help("Start a new session. You can choose to move its files to the Trash.")
+                        } else {
+                            Button("Clear Session") { model.clearSession() }
+                                .buttonStyle(.borderedProminent)
+                                .help("Start a new session. You can choose to move its files to the Trash.")
+                        }
                     }
                 }
             }

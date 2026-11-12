@@ -12,6 +12,8 @@ struct SavedSession: Codable, Equatable {
     var isManuallyOrdered: Bool
     var recordings: [URL]
     var outputs: [URL]
+    // What each saved video hid, by its path.
+    var hiddenRecords: [String: HiddenRecord]? = nil
 
     nonisolated(unsafe) static var defaultFile: URL? = FileManager.default
         .urls(for: .applicationSupportDirectory, in: .userDomainMask).first?

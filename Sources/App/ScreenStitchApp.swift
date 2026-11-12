@@ -6,6 +6,8 @@ enum Launcher {
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.first == "--cli" {
             CLI.run(Array(arguments.dropFirst()))
+        } else if arguments.first == "--find-text" {
+            TextFinder.runAsWorker(Array(arguments.dropFirst()))
         } else {
             ScreenStitchApp.main()
         }
@@ -68,6 +70,8 @@ struct EditCommands: View {
         Button("Move to Trash") { model.trashItems(model.selection) }
             .keyboardShortcut(.delete, modifiers: .command)
             .disabled(model.isEncoding || model.recording.isRecording || !model.selectionHasClips)
+        Button("Redact Text…") { model.showsHideTextList = true }
+            .disabled(model.isEncoding)
     }
 }
 
