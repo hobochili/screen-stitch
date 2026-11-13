@@ -50,15 +50,17 @@ if [[ "${1:-}" == "--install" ]]; then
 
   # Quit a running copy first and reopen it afterwards. The app treats SIGTERM like ⌘Q, which macOS refuses while
   # a dialog or sheet is open, so stop rather than force it.
+  # Matches the app alone, not its text-finding workers, which run the same executable with arguments.
+  app="^$executable\$"
   was_running=false
-  if pgrep -f "$executable" >/dev/null; then
+  if pgrep -f "$app" >/dev/null; then
     was_running=true
-    pkill -TERM -f "$executable" || true
+    pkill -TERM -f "$app" || true
     for _ in $(seq 50); do
-      pgrep -f "$executable" >/dev/null || break
+      pgrep -f "$app" >/dev/null || break
       sleep 0.2
     done
-    if pgrep -f "$executable" >/dev/null; then
+    if pgrep -f "$app" >/dev/null; then
       echo "Screen Stitch didn't quit. Close any open dialog, quit it, and run this again." >&2
       exit 1
     fi

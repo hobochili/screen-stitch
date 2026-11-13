@@ -45,7 +45,7 @@ struct TextTrack: Hashable, Sendable, Codable {
     }
 
     // Quick and careful readings box the same text at slightly different spots and sizes, so boxes would flicker. Each
-    // still stretch gets one box, as wide as all its readings and as tall as the typical one, so it stays on its line.
+    // still stretch gets one box covering all its readings, at the typical reading's height so it stays on its line.
     func steadied() -> TextTrack {
         var runs: [(first: Int, last: Int, box: CGRect)] = []
         for (index, sighting) in sightings.enumerated() {
@@ -62,9 +62,11 @@ struct TextTrack: Hashable, Sendable, Codable {
         }
         for index in runs.indices {
             let boxes = sightings[runs[index].first...runs[index].last].map(\.box)
-            let height = middle(boxes.map(\.height)), midY = middle(boxes.map(\.midY))
+            // Careful readings' taller boxes take in the line spacing, so height comes from the typical reading instead.
+            let height = middle(boxes.map(\.height))
+            let minY = (boxes.map(\.midY).min() ?? 0) - height / 2, maxY = (boxes.map(\.midY).max() ?? 0) + height / 2
             let minX = boxes.map(\.minX).min() ?? 0, maxX = boxes.map(\.maxX).max() ?? 0
-            runs[index].box = CGRect(x: minX, y: midY - height / 2, width: maxX - minX, height: height)
+            runs[index].box = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
         }
         var steady = self
         for run in runs {
@@ -129,27 +131,37 @@ enum TextTracker {
     // text can hide it for a few seconds. A track that picks up again in the same place is joined across the gap.
     static let recheckGap = 5.0
 
+    // Readings go to tracks closest pair first, so when one of several rows showing the same text goes unread for a
+    // frame, its track holds its box instead of taking a neighbouring row's reading.
     static func tracks(for text: String, in frames: [Frame]) -> [TextTrack] {
         var done: [TextTrack] = []
         var active: [TextTrack] = []
         for frame in frames {
-            var found = frame.found.filter { $0.text == text }
-            var still: [TextTrack] = []
-            for var track in active {
+            let found = frame.found.filter { $0.text == text }
+            var pairs: [(track: Int, reading: Int, distance: Double)] = []
+            for (trackIndex, track) in active.enumerated() {
                 let expected = predictedBox(of: track, at: frame.time)
-                let nearest = found.indices.min { distance(found[$0].box, expected) < distance(found[$1].box, expected) }
-                if let nearest, isNear(found[nearest].box, expected) {
-                    track.sightings.append(.init(time: frame.time, box: found[nearest].box))
-                    found.remove(at: nearest)
-                    still.append(track)
-                } else if frame.time - track.sightings[track.sightings.count - 1].time <= maxGap {
+                for (readingIndex, reading) in found.enumerated() where isNear(reading.box, expected) {
+                    pairs.append((trackIndex, readingIndex, distance(reading.box, expected)))
+                }
+            }
+            var matchedTracks: Set<Int> = [], matchedReadings: Set<Int> = []
+            for pair in pairs.sorted(by: { $0.distance < $1.distance })
+            where !matchedTracks.contains(pair.track) && !matchedReadings.contains(pair.reading) {
+                active[pair.track].sightings.append(.init(time: frame.time, box: found[pair.reading].box))
+                matchedTracks.insert(pair.track)
+                matchedReadings.insert(pair.reading)
+            }
+            var still: [TextTrack] = []
+            for (index, track) in active.enumerated() {
+                if matchedTracks.contains(index) || frame.time - track.sightings[track.sightings.count - 1].time <= maxGap {
                     still.append(track)
                 } else {
                     done.append(track)
                 }
             }
-            for start in found {
-                still.append(TextTrack(text: text, sightings: [.init(time: frame.time, box: start.box)]))
+            for (index, reading) in found.enumerated() where !matchedReadings.contains(index) {
+                still.append(TextTrack(text: text, sightings: [.init(time: frame.time, box: reading.box)]))
             }
             active = still
         }
@@ -257,9 +269,12 @@ final class SearchControl: @unchecked Sendable {
 
     var isStopped: Bool { lock.withLock { stopped } }
 
+    // A suspended worker doesn't act on SIGTERM until it's resumed, so paused workers are resumed first.
     func stop() {
         let running: [Process] = lock.withLock {
             stopped = true
+            if paused { workers.values.forEach { _ = $0.resume() } }
+            paused = false
             return Array(workers.values)
         }
         running.forEach { $0.terminate() }
@@ -281,14 +296,14 @@ final class SearchControl: @unchecked Sendable {
         }
     }
 
-    fileprivate func add(_ process: Process) {
+    func add(_ process: Process) {
         lock.withLock {
             workers[ObjectIdentifier(process)] = process
             if paused { _ = process.suspend() }
         }
     }
 
-    fileprivate func remove(_ process: Process) {
+    func remove(_ process: Process) {
         lock.withLock {
             if paused { _ = process.resume() }
             workers[ObjectIdentifier(process)] = nil
@@ -411,9 +426,21 @@ enum TextFinder {
         return groups
     }
 
+    // A worker that fails is run once more, since something outside the app can end one, and its stretch reads the same
+    // either way.
     private static func read(_ url: URL, from start: Double, to end: Double, pass: Pass, texts: [String],
                              only: Set<Double>? = nil, control: SearchControl,
                              onFrame: @escaping @Sendable (Double) -> Void) async throws -> [TextTracker.Frame] {
+        do {
+            return try await readOnce(url, from: start, to: end, pass: pass, texts: texts, only: only, control: control, onFrame: onFrame)
+        } catch TextFinderError.failed {
+            return try await readOnce(url, from: start, to: end, pass: pass, texts: texts, only: only, control: control, onFrame: onFrame)
+        }
+    }
+
+    private static func readOnce(_ url: URL, from start: Double, to end: Double, pass: Pass, texts: [String],
+                                 only: Set<Double>?, control: SearchControl,
+                                 onFrame: @escaping @Sendable (Double) -> Void) async throws -> [TextTracker.Frame] {
         var arguments = ["--find-text", url.path, pass.rawValue, "\(start)", "\(end)"]
         var timesFile: URL?
         if let only {
@@ -433,7 +460,7 @@ enum TextFinder {
         process.standardError = errors
         process.standardInput = FileHandle.nullDevice
         let exit = ExitStatus()
-        process.terminationHandler = { exit.finish($0.terminationStatus) }
+        process.terminationHandler = { exit.finish($0) }
         guard !control.isStopped else { throw CancellationError() }
         try process.run()
         control.add(process)
@@ -454,11 +481,11 @@ enum TextFinder {
             frames.append(frame)
             onFrame(frame.time)
         }
-        let status = await exit.wait()
+        let ending = await exit.wait()
         if control.isStopped { throw CancellationError() }
-        guard status == 0 else {
+        guard ending == "exit 0" else {
             let message = String(decoding: await errorText.value, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw TextFinderError.failed(message.isEmpty ? "Text recognition stopped unexpectedly." : message)
+            throw TextFinderError.failed(message.isEmpty ? "Text recognition stopped unexpectedly. (Details for support: \(ending).)" : message)
         }
         return frames
     }
@@ -530,31 +557,35 @@ enum TextFinder {
         var lastCarefulFound: [TextTracker.Found] = []
         var lastQuickLook = FrameLook()
         var lastQuickFound: [TextTracker.Found] = []
+        // A worker has no run loop to empty the autorelease pool, so each frame gets its own, or Vision's and the
+        // decoder's leftovers pile up until the stretch ends.
         while let sample = output.copyNextSampleBuffer() {
-            let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-            // A frame showing when a stretch starts belongs to the stretch before.
-            guard time >= start, time < end, let buffer = CMSampleBufferGetImageBuffer(sample) else { continue }
-            if let only, !only.contains(time) { continue }
-            guard pass == .sampled else {
-                onFrame(TextTracker.Frame(time: time, found: try recognize(texts, in: buffer, level: .accurate), careful: true))
-                continue
-            }
-            // A picture that hasn't visibly changed since a reading reads the same, so that reading is reused. Each frame is
-            // compared with the frame that was read, not the one before, so a slow fade can't creep past.
-            let look = FrameLook(buffer)
-            if look.looksLike(lastCarefulLook) {
-                onFrame(TextTracker.Frame(time: time, found: lastCarefulFound, careful: true))
-            } else if time - lastCareful >= carefulInterval || (time - lastCareful >= changeInterval && look.differsMuch(from: lastCarefulLook)) {
-                lastCareful = time
-                lastCarefulLook = look
-                lastCarefulFound = try recognize(texts, in: buffer, level: .accurate)
-                onFrame(TextTracker.Frame(time: time, found: lastCarefulFound, careful: true))
-            } else if look.looksLike(lastQuickLook) {
-                onFrame(TextTracker.Frame(time: time, found: lastQuickFound))
-            } else {
-                lastQuickLook = look
-                lastQuickFound = try recognize(texts, in: buffer, level: .fast)
-                onFrame(TextTracker.Frame(time: time, found: lastQuickFound))
+            try autoreleasepool {
+                let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+                // A frame showing when a stretch starts belongs to the stretch before.
+                guard time >= start, time < end, let buffer = CMSampleBufferGetImageBuffer(sample) else { return }
+                if let only, !only.contains(time) { return }
+                guard pass == .sampled else {
+                    onFrame(TextTracker.Frame(time: time, found: try recognize(texts, in: buffer, level: .accurate), careful: true))
+                    return
+                }
+                // A picture that hasn't visibly changed since a reading reads the same, so that reading is reused. Each frame
+                // is compared with the frame that was read, not the one before, so a slow fade can't creep past.
+                let look = FrameLook(buffer)
+                if look.looksLike(lastCarefulLook) {
+                    onFrame(TextTracker.Frame(time: time, found: lastCarefulFound, careful: true))
+                } else if time - lastCareful >= carefulInterval || (time - lastCareful >= changeInterval && look.differsMuch(from: lastCarefulLook)) {
+                    lastCareful = time
+                    lastCarefulLook = look
+                    lastCarefulFound = try recognize(texts, in: buffer, level: .accurate)
+                    onFrame(TextTracker.Frame(time: time, found: lastCarefulFound, careful: true))
+                } else if look.looksLike(lastQuickLook) {
+                    onFrame(TextTracker.Frame(time: time, found: lastQuickFound))
+                } else {
+                    lastQuickLook = look
+                    lastQuickFound = try recognize(texts, in: buffer, level: .fast)
+                    onFrame(TextTracker.Frame(time: time, found: lastQuickFound))
+                }
             }
         }
         if reader.status == .failed { throw reader.error ?? CocoaError(.fileReadUnknown) }
@@ -582,7 +613,8 @@ enum TextFinder {
             for candidate in observation.topCandidates(3) {
                 for text in texts {
                     for (range, missing) in matches(of: text, in: candidate.string) {
-                        guard var box = try candidate.boundingBox(for: range)?.boundingBox else { continue }
+                        // Text read without a box of its own gets its whole line's.
+                        var box = (try? candidate.boundingBox(for: range))??.boundingBox ?? observation.boundingBox
                         // A reading a character short may have dropped one that's still visible, on either side.
                         if missing > 0 {
                             let character = box.width / Double(max(text.count - missing, 1))
@@ -752,28 +784,29 @@ private final class Counter: @unchecked Sendable {
     }
 }
 
-// Waits for a worker to exit, whether it exits before or after anyone asks.
+// Waits for a worker to exit, whether it exits before or after anyone asks. Says how it ended: "exit 1" or "signal 15".
 private final class ExitStatus: @unchecked Sendable {
     private let lock = NSLock()
-    private var status: Int32?
-    private var waiting: CheckedContinuation<Int32, Never>?
+    private var ending: String?
+    private var waiting: CheckedContinuation<String, Never>?
 
-    func finish(_ status: Int32) {
-        let waiting: CheckedContinuation<Int32, Never>? = lock.withLock {
-            self.status = status
+    func finish(_ process: Process) {
+        let ending = process.terminationReason == .uncaughtSignal ? "signal \(process.terminationStatus)" : "exit \(process.terminationStatus)"
+        let waiting: CheckedContinuation<String, Never>? = lock.withLock {
+            self.ending = ending
             defer { self.waiting = nil }
             return self.waiting
         }
-        waiting?.resume(returning: status)
+        waiting?.resume(returning: ending)
     }
 
-    func wait() async -> Int32 {
+    func wait() async -> String {
         await withCheckedContinuation { continuation in
-            let finished: Int32? = lock.withLock {
-                if self.status == nil { self.waiting = continuation }
-                return self.status
+            let ended: String? = lock.withLock {
+                if self.ending == nil { self.waiting = continuation }
+                return self.ending
             }
-            if let finished { continuation.resume(returning: finished) }
+            if let ended { continuation.resume(returning: ended) }
         }
     }
 }

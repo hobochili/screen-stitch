@@ -1104,7 +1104,13 @@ final class StitchModel {
         let texts = activeHiddenText
         pendingRecord = texts.isEmpty ? nil : HiddenRecord(texts: texts, places: [])
         progressBase = 0
-        if compressing, !texts.isEmpty {
+        // A clip replaced since it was searched is searched again, and one whose search failed gets another try. Either
+        // way its text has to be found and covered, which joining as is can't do.
+        for clip in clips {
+            textSearches[clip.url]?.checkFile()
+            textSearches[clip.url]?.forgetFailure()
+        }
+        if !texts.isEmpty, compressing || !canCombineWithoutCompressing {
             hideText(texts, thenEncodeTo: output)
         } else {
             startFFmpeg(to: output, compressing: compressing)
@@ -1121,11 +1127,6 @@ final class StitchModel {
         startedAt = Date()
         state = .encoding
         let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Redacting text")
-        // A clip replaced since it was searched is searched again, and one whose search failed gets another try.
-        for clip in clips {
-            textSearches[clip.url]?.checkFile()
-            textSearches[clip.url]?.forgetFailure()
-        }
         let searchShare = clips.contains(where: needsSearch) ? 0.4 : 0
         coverCopies = []
         Task {
@@ -1147,7 +1148,9 @@ final class StitchModel {
                 }
                 var tracks: [UUID: [TextTrack]] = [:]
                 for clip in clips {
-                    guard let found = hiddenTextTracks(for: clip) else { throw CancellationError() }
+                    guard let found = hiddenTextTracks(for: clip) else {
+                        throw ProbeError("Couldn't look for text in “\(clip.name)”. Combine again to look once more.")
+                    }
                     if !found.isEmpty { tracks[clip.id] = found }
                 }
                 pendingRecord = hiddenRecord(texts: texts, tracks: tracks)
@@ -1271,6 +1274,7 @@ final class StitchModel {
     }
 
     func abortForQuit() {
+        textSearches.values.forEach { $0.cancel() }
         coverStop?.set()
         coverCopies.forEach { try? FileManager.default.removeItem(at: $0) }
         guard isEncoding, let run, let job else { return }

@@ -21,7 +21,8 @@ import Vision
         #expect(box.contains(quick))
         #expect(box.minX <= careful.minX && box.maxX >= careful.maxX)
         // The careful reading's box takes in the gap between lines, so it doesn't set the height.
-        #expect(abs(boxes.first!.height - quick.height) < 1e-9)
+        #expect(boxes.first!.height < careful.height)
+        #expect(box.minY <= careful.midY - quick.height / 2 && box.maxY >= careful.midY + quick.height / 2)
     }
 
     @Test func scrollingTextKeepsOneSize() {
@@ -75,6 +76,16 @@ import Vision
         readings.map { time, found in
             TextTracker.Frame(time: time, found: found.map { TextTracker.Found(text: "4242", box: CGRect(x: 0.1, y: $0, width: 0.1, height: 0.05)) })
         }
+    }
+
+    // Two rows showing the same card ending, the top one unread for a frame: the bottom row's reading stays with its
+    // own track, and the top track holds its box through the gap.
+    @Test func aRowMissedForAFrameDoesntTakeItsNeighboursReading() {
+        let tracks = TextTracker.tracks(for: "4242", in: frames([(0, [0.50, 0.53]), (0.1, [0.53]), (0.2, [0.50, 0.53])]))
+        #expect(tracks.count == 2)
+        let top = tracks.first { $0.sightings[0].box.minY == 0.50 }!
+        #expect(top.sightings.map(\.box.minY) == [0.50, 0.50])
+        #expect(tracks.first { $0 != top }!.sightings.map(\.box.minY) == [0.53, 0.53, 0.53])
     }
 
     @Test func aShortGapKeepsOneTrack() {
@@ -476,5 +487,23 @@ private func readText(_ url: URL) throws -> [String] {
         let read = FrameLook(frame(grey: 200))
         #expect(FrameLook(frame(grey: 190)).looksLike(read))
         #expect(!FrameLook(frame(grey: 180)).looksLike(read))
+    }
+}
+
+@Suite struct SearchControlTests {
+    // A suspended worker only acts on SIGTERM once it's resumed, as when the text is unchecked during a recording.
+    @Test func stoppingEndsPausedWorkers() throws {
+        let control = SearchControl()
+        let worker = Process()
+        worker.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        worker.arguments = ["30"]
+        try worker.run()
+        control.add(worker)
+        control.pause()
+        let started = Date()
+        control.stop()
+        worker.waitUntilExit()
+        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(worker.terminationReason == .uncaughtSignal)
     }
 }

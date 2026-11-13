@@ -84,26 +84,34 @@ enum TextCover {
         let group = DispatchGroup()
         let queue = DispatchQueue(label: "Screen Stitch cover")
         nonisolated(unsafe) var reported = 0.0
+        // A frame that can't be covered fails the copy, rather than going into it as it is.
+        nonisolated(unsafe) var failure: Error?
         group.enter()
         videoInput.requestMediaDataWhenReady(on: queue) {
             while videoInput.isReadyForMoreMediaData {
-                guard !stop.isSet, let sample = videoOutput.copyNextSampleBuffer(), let buffer = CMSampleBufferGetImageBuffer(sample) else {
+                guard !stop.isSet, let sample = videoOutput.copyNextSampleBuffer() else {
                     videoInput.markAsFinished()
                     group.leave()
                     return
                 }
                 let time = CMSampleBufferGetPresentationTimeStamp(sample)
-                cover(buffer, boxes: tracks.compactMap { $0.box(at: time.seconds) })
-                if !adaptor.append(buffer, withPresentationTime: time) {
-                    videoInput.markAsFinished()
-                    group.leave()
-                    return
+                do {
+                    guard let buffer = CMSampleBufferGetImageBuffer(sample) else { throw CocoaError(.fileReadCorruptFile) }
+                    try cover(buffer, boxes: tracks.compactMap { $0.box(at: time.seconds) })
+                    if adaptor.append(buffer, withPresentationTime: time) {
+                        let done = duration > 0 ? min(time.seconds / duration, 1) : 0
+                        if done - reported >= 0.005 {
+                            reported = done
+                            progress(done)
+                        }
+                        continue
+                    }
+                } catch {
+                    failure = error
                 }
-                let done = duration > 0 ? min(time.seconds / duration, 1) : 0
-                if done - reported >= 0.005 {
-                    reported = done
-                    progress(done)
-                }
+                videoInput.markAsFinished()
+                group.leave()
+                return
             }
         }
         for pair in pairs {
@@ -121,11 +129,11 @@ enum TextCover {
         }
         group.wait()
 
-        if stop.isSet {
+        if stop.isSet || failure != nil {
             reader.cancelReading()
             writer.cancelWriting()
             try? FileManager.default.removeItem(at: output)
-            throw CancellationError()
+            throw failure ?? CancellationError()
         }
         if reader.status == .failed {
             writer.cancelWriting()
@@ -152,15 +160,16 @@ enum TextCover {
         return properties
     }
 
-    private static func cover(_ buffer: CVPixelBuffer, boxes: [CGRect]) {
+    private static func cover(_ buffer: CVPixelBuffer, boxes: [CGRect]) throws {
         guard !boxes.isEmpty else { return }
-        CVPixelBufferLockBaseAddress(buffer, [])
+        guard CVPixelBufferLockBaseAddress(buffer, []) == kCVReturnSuccess else { throw CocoaError(.fileWriteUnknown) }
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
-        guard let context = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height, bitsPerComponent: 8,
+        guard let base = CVPixelBufferGetBaseAddress(buffer),
+              let context = CGContext(data: base, width: width, height: height, bitsPerComponent: 8,
                                       bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-        else { return }
+        else { throw CocoaError(.fileWriteUnknown) }
         context.setFillColor(CGColor(gray: 0, alpha: 1))
         for box in boxes {
             let rect = rect(for: box, width: Double(width), height: Double(height))

@@ -103,10 +103,13 @@ final class TextSearch {
             let missing = wanted.subtracting(found.keys).sorted()
             guard !missing.isEmpty else { break }
             progress = 0
+            let searched = stamp
             do {
                 let result = try await TextFinder.find(missing, in: url, progress: { value in
                     Task { @MainActor in self.progress = value }
                 }, control: control)
+                // A file replaced during the search was stopped by `checkFile`, and these results are for the old one.
+                guard !control.isStopped, stamp == searched else { break }
                 for text in missing {
                     found[text] = result[text] ?? []
                 }
