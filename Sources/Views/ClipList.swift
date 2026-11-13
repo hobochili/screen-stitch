@@ -77,11 +77,20 @@ struct HideTextButton: View {
     @Environment(StitchModel.self) private var model
 
     var body: some View {
-        Button { model.showsHideTextList = true } label: {
-            Label("Redact Text…", systemImage: "text.redaction")
+        if model.activeHiddenText.isEmpty {
+            Button { model.showsHideTextList = true } label: {
+                Label("Redact Text…", systemImage: "text.redaction")
+            }
+            .fixedSize()
+            .help("Redact text, such as card digits, everywhere it appears in the video")
+        } else {
+            Button { model.showsHideTextList = true } label: {
+                Label("Redact Text…", systemImage: "text.redaction")
+            }
+            .buttonStyle(.borderedProminent)
+            .fixedSize()
+            .help(model.hidingLine ?? "")
         }
-        .fixedSize()
-        .help("Redact text, such as card digits, everywhere it appears in the video")
     }
 }
 

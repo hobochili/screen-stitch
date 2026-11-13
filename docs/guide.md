@@ -151,7 +151,7 @@ To redact something from the video, such as the last four digits of a card, clic
 (or choose it in the Edit menu). The start screen has a **Redact Text…** button too, so you can set it up before you
 record. A small sheet opens. Type the text and click **Add** (or press Return). Pasting several
 lines adds each one. Screen Stitch then looks through every clip for it, even as the page scrolls, and covers each place
-it finds with a solid black box when you combine.
+it finds with a solid black box when you combine. **Redact Text…** turns blue while any text is set to be redacted.
 
 The boxes are permanent in the saved video. The covered pixels are replaced, not overlaid, so no one can remove a box to
 see what was under it. Your original recordings are unchanged, so share only the saved video.
