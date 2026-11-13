@@ -96,9 +96,21 @@ struct ContentView: View {
         } isTargeted: { targeted in
             model.isDropTargeted = targeted
         }
-        // The toolbar waits until there's a clip. Before then, the start screen and the File menu offer the same things.
+        // Apart from Exports, the toolbar waits until there's a clip. Before then, the start screen and the File menu offer
+        // the same things.
         .toolbar {
             let locked = model.tools == nil
+            // Shown once anything has been exported, so finished exports and the log stay in reach.
+            if !model.exports.isEmpty {
+                ToolbarItem {
+                    Button("Exports", systemImage: "arrow.down.circle") { model.showsExports.toggle() }
+                        .help("Videos saved or being saved since Screen Stitch opened")
+                        .popover(isPresented: Binding(get: { model.showsExports }, set: { model.showsExports = $0 }), arrowEdge: .bottom) {
+                            ExportsList()
+                                .environment(model)
+                        }
+                }
+            }
             if !model.clips.isEmpty {
                 ToolbarItemGroup {
                     Toggle(isOn: Binding(get: { model.recordMicrophone }, set: { model.recordMicrophone = $0 })) {

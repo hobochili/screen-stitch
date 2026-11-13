@@ -124,7 +124,7 @@ struct HiddenTextReviewSheet: View {
         let count: String = places.count == 1 ? "Redacted in 1 place" : "Redacted in \(places.count) places"
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                PlainPlayer(player: review.player)
+                PlainPlayer(player: review.player, outline: review.outline)
                     .frame(minWidth: 560, minHeight: 380)
                 Divider()
                 VStack(alignment: .leading, spacing: 10) {
@@ -153,13 +153,30 @@ struct HiddenTextReviewSheet: View {
                     })) {
                         ForEach(places.indices, id: \.self) { index in
                             let place = places[index]
-                            HStack(spacing: 6) {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.secondary)
-                                    .opacity(review.visited.contains(index) ? 1 : 0)
-                                Text(verbatim: "\(formatDuration(place.start))–\(formatDuration(place.end)) · \(place.text) · Clip \(place.clip)")
-                                    .monospacedDigit()
+                            HStack(spacing: 10) {
+                                if place.box != nil {
+                                    Group {
+                                        if let thumbnail = review.thumbnails[index] {
+                                            Image(nsImage: thumbnail)
+                                                .resizable()
+                                                .aspectRatio(contentMode: .fit)
+                                        } else {
+                                            Color.secondary.opacity(0.15)
+                                        }
+                                    }
+                                    .frame(width: 96, height: 32)
+                                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(verbatim: place.text)
+                                        .lineLimit(1)
+                                    Text(verbatim: "Clip \(place.clip) · \(formatDuration(place.start))–\(formatDuration(place.end))")
+                                        .font(.caption)
+                                        .monospacedDigit()
+                                        .foregroundStyle(.secondary)
+                                }
                             }
+                            .padding(.vertical, 2)
                             .tag(index)
                         }
                     }
@@ -191,7 +208,7 @@ struct HiddenTextReviewSheet: View {
             }
             Divider()
             HStack {
-                Text("Play each place to check that the black box covers all of the text.")
+                Text("Look at each place to check that its black box covers all of the text. Play it to watch it move.")
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Done") { model.closeHiddenTextReview() }
@@ -203,17 +220,57 @@ struct HiddenTextReviewSheet: View {
     }
 }
 
-// The system player, with its usual controls.
+// The system player, with its usual controls, and an outline around one box while it's paused on it.
 struct PlainPlayer: NSViewRepresentable {
     let player: AVPlayer
+    var outline: CGRect?
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.player = player
         view.controlsStyle = .inline
         view.showsFullScreenToggleButton = false
+        if let overlay = view.contentOverlayView {
+            let outlineView = OutlineView(frame: overlay.bounds)
+            outlineView.autoresizingMask = [.width, .height]
+            outlineView.playerView = view
+            overlay.addSubview(outlineView)
+        }
         return view
     }
 
-    func updateNSView(_ view: AVPlayerView, context: Context) {}
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        guard let outlineView = view.contentOverlayView?.subviews.first as? OutlineView, outlineView.box != outline else { return }
+        outlineView.box = outline
+        outlineView.needsDisplay = true
+    }
+
+    // Draws around a box given as a fraction of the video's frame, wherever the player has placed the video.
+    final class OutlineView: NSView {
+        weak var playerView: AVPlayerView?
+        var box: CGRect?
+
+        override var isFlipped: Bool { true }
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            layerContentsRedrawPolicy = .duringViewResize
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func draw(_ dirtyRect: NSRect) {
+            guard let box, let playerView else { return }
+            let video = convert(playerView.videoBounds, from: playerView)
+            guard video.width > 0, video.height > 0 else { return }
+            let rect = CGRect(x: video.minX + box.minX * video.width, y: video.minY + box.minY * video.height,
+                              width: box.width * video.width, height: box.height * video.height)
+            let path = NSBezierPath(roundedRect: rect.insetBy(dx: -8, dy: -8), xRadius: 4, yRadius: 4)
+            path.lineWidth = 3
+            NSColor.systemYellow.setStroke()
+            path.stroke()
+        }
+    }
 }

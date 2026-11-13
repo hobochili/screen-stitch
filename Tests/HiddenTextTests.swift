@@ -218,9 +218,45 @@ import Vision
         #expect(groups == [[1, 1.1, 1.2], [5, 9, 9.5]])
     }
 
+    // "4242" 100 pixels wide, so 25 to a character, on a line 20 high.
     @Test func boxesArePaddedSoNoSliverOfALetterShows() {
-        let rect = TextCover.rect(for: CGRect(x: 0.5, y: 0.5, width: 0.1, height: 0.02), width: 1000, height: 1000)
-        #expect(rect.minX <= 493 && rect.maxX >= 607 && rect.minY <= 493 && rect.maxY >= 527)
+        let rect = TextCover.rect(for: CGRect(x: 0.5, y: 0.5, width: 0.1, height: 0.02), characters: 4, width: 1000, height: 1000)
+        #expect(rect.minX <= 492 && rect.maxX >= 608 && rect.minY <= 495 && rect.maxY >= 525)
+        #expect(rect.minX > 487 && rect.maxX < 613 && rect.minY > 490 && rect.maxY < 530)
+    }
+
+    // Letters at x 40–100 and y 20–40, read with blank space around them as careful readings are.
+    @Test func boxesAreTrimmedToTheirLetters() {
+        let width = 200, height = 60
+        var pixels = [UInt8](repeating: 30, count: width * height * 4)
+        for y in 20..<40 {
+            for x in 40..<100 where x % 15 < 11 {
+                pixels.replaceSubrange((y * width + x) * 4..<(y * width + x) * 4 + 3, with: [230, 230, 230])
+            }
+        }
+        let box = pixels.withUnsafeMutableBytes { bytes in
+            let frame = TextLook.Frame(base: bytes.baseAddress!, bytesPerRow: width * 4, width: width, height: height)
+            return TextFinder.inked(CGRect(x: 32 / 200.0, y: 15 / 60.0, width: 76 / 200.0, height: 35 / 60.0), in: frame,
+                                    sideways: 15 / 200.0)
+        }
+        #expect(abs(box.minX * 200 - 40) < 0.5 && abs(box.maxX * 200 - 100) < 0.5)
+        #expect(abs(box.minY * 60 - 20) < 0.5 && abs(box.maxY * 60 - 40) < 0.5)
+    }
+
+    // Trimming stops at the limit it's given, so a wrong reading can't uncover text.
+    @Test func trimmingStopsAtACharacter() {
+        let width = 200, height = 60
+        var pixels = [UInt8](repeating: 30, count: width * height * 4)
+        for y in 20..<40 {
+            for x in 150..<160 {
+                pixels.replaceSubrange((y * width + x) * 4..<(y * width + x) * 4 + 3, with: [230, 230, 230])
+            }
+        }
+        let box = pixels.withUnsafeMutableBytes { bytes in
+            let frame = TextLook.Frame(base: bytes.baseAddress!, bytesPerRow: width * 4, width: width, height: height)
+            return TextFinder.inked(CGRect(x: 0.1, y: 15 / 60.0, width: 0.7, height: 35 / 60.0), in: frame, sideways: 0.05)
+        }
+        #expect(abs(box.minX * 200 - 30) < 0.5)
     }
 
     // A file with no video isn't counted as searched with nothing found, which would let it through unredacted.
@@ -337,6 +373,9 @@ import Vision
         #expect(record.texts == ["4242"])
         #expect(record.places.map(\.clip) == [1])
         #expect(record.places[0].start >= model.titleCards[0].duration)
+        let at = try #require(record.places[0].at), box = try #require(record.places[0].box)
+        #expect(at >= record.places[0].start && at <= record.places[0].end)
+        #expect(CGRect(x: 0, y: 0, width: 1, height: 1).contains(box))
         #expect(model.hiddenSummary(for: output) == "4242 redacted in 1 place. Check it before you share.")
         #expect(model.staleNote(for: output) == nil)
         model.addHiddenText("Order total")
@@ -438,14 +477,31 @@ import Vision
         #expect(!model.canCombineWithoutCompressing)
     }
 
-    @Test func placesRunTogetherWhenCloseAndStayWithinTheClip() {
+    @Test func eachSpotIsAPlaceWithinTheClip() {
         let box = CGRect(x: 0.1, y: 0.1, width: 0.1, height: 0.05)
         let tracks = [
-            TextTrack(text: "a", sightings: [.init(time: 0.2, box: box), .init(time: 2, box: box)]),
-            TextTrack(text: "a", sightings: [.init(time: 2.8, box: box)]),
             TextTrack(text: "a", sightings: [.init(time: 6, box: box), .init(time: 9.9, box: box)]),
+            TextTrack(text: "a", sightings: [.init(time: 0.2, box: box), .init(time: 2, box: box)]),
+            TextTrack(text: "a", sightings: [.init(time: 1, box: box.offsetBy(dx: 0, dy: 0.5))]),
         ]
-        #expect(StitchModel.places(of: tracks, duration: 10) == [0...3.3, 5.5...10])
+        #expect(StitchModel.places(of: tracks, duration: 10) == [0...2.5, 0.5...1.5, 5.5...10])
+    }
+
+    // A smaller clip is centered in the saved video, so its boxes move in by the bars around it.
+    @Test func placesKeepWhereTheBoxIsInTheSavedVideo() {
+        let model = StitchModel()
+        func clip(_ width: Int, _ height: Int) -> Clip {
+            Clip(url: URL(fileURLWithPath: "/tmp/\(width).mov"), date: Date(), duration: 4, width: width, height: height, videoStream: 0,
+                 audioStreams: 0, fileSize: 1)
+        }
+        let big = clip(1000, 500), small = clip(500, 250)
+        let box = CGRect(x: 0.2, y: 0.4, width: 0.2, height: 0.1)
+        let track = TextTrack(text: "a", sightings: [.init(time: 1, box: box), .init(time: 2, box: box)])
+        let record = model.hiddenRecord(items: [.clip(big), .clip(small)], texts: ["a"], tracks: [big.id: [track], small.id: [track]],
+                                        size: .original)
+        #expect(record.places.map(\.at) == [1, 5])
+        #expect(record.places[0].box == box)
+        #expect(record.places[1].box == CGRect(x: 0.35, y: 0.45, width: 0.1, height: 0.05))
     }
 }
 

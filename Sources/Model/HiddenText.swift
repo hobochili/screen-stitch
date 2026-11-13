@@ -17,6 +17,10 @@ struct HiddenPlace: Codable, Hashable {
     var end: Double
     var text: String
     var clip: Int
+    // When the text was first read, and its box then as a fraction of the saved video's frame from the top left.
+    // Videos saved by older versions have neither.
+    var at: Double?
+    var box: CGRect?
 }
 
 // What a saved video hid and where, so it can be checked later.
@@ -34,7 +38,7 @@ final class TextSearch {
         .appendingPathComponent("Screen Stitch/Redactions", isDirectory: true)
     // Part of the cache's key. It goes up whenever finding or tracking changes, so places found by an older version, which
     // may have missed text, aren't reused.
-    static let cacheVersion = 3
+    static let cacheVersion = 4
 
     let url: URL
     private let cacheFolder: URL?
@@ -147,7 +151,7 @@ final class TextSearch {
     }
 }
 
-// The Check Redactions sheet: the saved video, which place is showing, and the places already looked at.
+// The Check Redactions sheet: the saved video, which place is showing, and a picture of each.
 @MainActor
 @Observable
 final class HiddenTextReview: Identifiable {
@@ -156,23 +160,37 @@ final class HiddenTextReview: Identifiable {
     let record: HiddenRecord
     let player: AVPlayer
     private(set) var current: Int?
-    private(set) var visited: Set<Int> = []
+    // Each place's box with some of the picture around it, as it looks in the saved video.
+    private(set) var thumbnails: [Int: NSImage] = [:]
+    // Whether the player is paused on the current place's first reading, where its box is outlined.
+    private(set) var isOnPlace = false
     var showsHelp = false
     @ObservationIgnored private var endObserver: Any?
+    @ObservationIgnored private var timeObserver: Any?
+    @ObservationIgnored private var thumbnailTask: Task<Void, Never>?
 
     init(video: URL, record: HiddenRecord) {
         self.video = video
         self.record = record
         player = AVPlayer(url: video)
+        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 10), queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateIsOnPlace() }
+        }
+        thumbnailTask = Task { [weak self] in await self?.makeThumbnails() }
     }
 
     var places: [HiddenPlace] { record.places }
 
-    // Plays the place from a second before it and stops just after.
+    var outline: CGRect? {
+        guard isOnPlace, let current else { return nil }
+        return places[current].box
+    }
+
+    // Stops on the moment the text was first read, with its box outlined. Places saved without one play from a second
+    // before instead. Either way, playing stops just after the place.
     func show(_ index: Int) {
         guard places.indices.contains(index) else { return }
         current = index
-        visited.insert(index)
         let place = places[index]
         if let endObserver {
             player.removeTimeObserver(endObserver)
@@ -181,10 +199,17 @@ final class HiddenTextReview: Identifiable {
                                                      queue: .main) { [weak self] in
             MainActor.assumeIsolated { self?.player.pause() }
         }
-        player.seek(to: CMTime(seconds: max(place.start - 1, 0), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) {
-            [weak self] finished in
-            guard finished else { return }
-            Task { @MainActor in self?.player.play() }
+        if let at = place.at {
+            player.pause()
+            player.seek(to: CMTime(seconds: at, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                Task { @MainActor in self?.updateIsOnPlace() }
+            }
+        } else {
+            player.seek(to: CMTime(seconds: max(place.start - 1, 0), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) {
+                [weak self] finished in
+                guard finished else { return }
+                Task { @MainActor in self?.player.play() }
+            }
         }
     }
 
@@ -195,10 +220,46 @@ final class HiddenTextReview: Identifiable {
 
     func close() {
         player.pause()
-        if let endObserver {
-            player.removeTimeObserver(endObserver)
-            self.endObserver = nil
+        thumbnailTask?.cancel()
+        for observer in [endObserver, timeObserver].compactMap({ $0 }) {
+            player.removeTimeObserver(observer)
         }
+        endObserver = nil
+        timeObserver = nil
+    }
+
+    private func updateIsOnPlace() {
+        guard let current, let at = places[current].at else {
+            isOnPlace = false
+            return
+        }
+        isOnPlace = player.rate == 0 && abs(player.currentTime().seconds - at) < 0.05
+    }
+
+    private func makeThumbnails() async {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        generator.maximumSize = CGSize(width: 1920, height: 1920)
+        for (index, place) in places.enumerated() {
+            guard !Task.isCancelled, let at = place.at, let box = place.box,
+                  let image = try? await generator.image(at: CMTime(seconds: at, preferredTimescale: 600)).image else { continue }
+            thumbnails[index] = NSImage(cgImage: Self.crop(image, around: box), size: .zero)
+        }
+    }
+
+    // A strip three times as wide as it's tall, centered on the box, with room around it to see what's next to it.
+    nonisolated static func crop(_ image: CGImage, around box: CGRect) -> CGImage {
+        let width = Double(image.width), height = Double(image.height)
+        let rect = CGRect(x: box.minX * width, y: box.minY * height, width: box.width * width, height: box.height * height)
+        var cropHeight = rect.height * 3
+        var cropWidth = max(cropHeight * 3, rect.width * 1.4)
+        cropHeight = max(cropHeight, cropWidth / 3)
+        cropWidth = min(cropWidth, width)
+        cropHeight = min(cropHeight, height)
+        let x = min(max(rect.midX - cropWidth / 2, 0), width - cropWidth)
+        let y = min(max(rect.midY - cropHeight / 2, 0), height - cropHeight)
+        return image.cropping(to: CGRect(x: x, y: y, width: cropWidth, height: cropHeight).integral) ?? image
     }
 }
 
@@ -436,17 +497,28 @@ extension StitchModel {
     }
 
     // Where each clip's tracks land in the combined video, given the clips and title cards before it.
-    func hiddenRecord(items: [SessionItem], texts: [String], tracks: [UUID: [TextTrack]]) -> HiddenRecord {
+    func hiddenRecord(items: [SessionItem], texts: [String], tracks: [UUID: [TextTrack]], size: OutputSize) -> HiddenRecord {
         var places: [HiddenPlace] = []
         var offset = 0.0
         var number = 0
+        let clips = items.compactMap { if case let .clip(clip) = $0 { clip } else { nil } }
+        let (width, height, scale) = EncodeJob.canvas(for: clips, size: size)
         for item in items {
             switch item {
             case let .clip(clip):
                 number += 1
+                // Each clip is scaled by the same amount and centered in the video, as EncodeJob does.
+                let clipWidth = Double(clip.width) * scale, clipHeight = Double(clip.height) * scale
+                let left = (Double(width) - clipWidth) / 2, top = (Double(height) - clipHeight) / 2
                 for text in texts {
-                    for range in Self.places(of: (tracks[clip.id] ?? []).filter { $0.text == text }, duration: clip.duration) {
-                        places.append(HiddenPlace(start: offset + range.lowerBound, end: offset + range.upperBound, text: text, clip: number))
+                    for (range, track) in Self.spots(of: (tracks[clip.id] ?? []).filter { $0.text == text }, duration: clip.duration) {
+                        let first = track.sightings[0]
+                        let box = CGRect(x: (left + first.box.minX * clipWidth) / Double(width),
+                                         y: (top + first.box.minY * clipHeight) / Double(height),
+                                         width: first.box.width * clipWidth / Double(width),
+                                         height: first.box.height * clipHeight / Double(height))
+                        places.append(HiddenPlace(start: offset + range.lowerBound, end: offset + range.upperBound, text: text, clip: number,
+                                                  at: offset + first.time, box: box))
                     }
                 }
                 offset += clip.duration
@@ -454,20 +526,19 @@ extension StitchModel {
                 offset += card.duration
             }
         }
-        return HiddenRecord(texts: texts, places: places.sorted { $0.start < $1.start })
+        return HiddenRecord(texts: texts, places: places.sorted { ($0.at ?? $0.start) < ($1.at ?? $1.start) })
     }
 
-    // The stretches of a clip where a piece of text shows, with stretches less than a second apart run together.
+    // The stretches of a clip where a piece of text shows, one for each spot on screen it was covered.
     static func places(of tracks: [TextTrack], duration: Double) -> [ClosedRange<Double>] {
-        var places: [ClosedRange<Double>] = []
-        for track in tracks.sorted(by: { $0.start < $1.start }) {
-            let range = max(0, track.start)...min(duration, track.end)
-            if let last = places.last, range.lowerBound - last.upperBound < 1 {
-                places[places.count - 1] = last.lowerBound...max(last.upperBound, range.upperBound)
-            } else {
-                places.append(range)
-            }
+        spots(of: tracks, duration: duration).map(\.range)
+    }
+
+    static func spots(of tracks: [TextTrack], duration: Double) -> [(range: ClosedRange<Double>, track: TextTrack)] {
+        tracks.compactMap { track in
+            let start = max(0, track.start), end = min(duration, track.end)
+            return start <= end ? (start...end, track) : nil
         }
-        return places
+        .sorted { $0.range.lowerBound < $1.range.lowerBound }
     }
 }

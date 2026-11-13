@@ -32,13 +32,14 @@ struct BottomBar: View {
                     Text(verbatim: "Watching \(folder.lastPathComponent) for new screen recordings")
                         .foregroundStyle(.secondary)
                     Button("Change…") { model.chooseWatchFolder() }
-                        .linkButton()
                     Button("Stop Watching") { model.stopWatching() }
-                        .linkButton()
                 }
                 .font(.caption)
+                .controlSize(.small)
             }
-            HidingTextLine()
+            if model.clips.isEmpty {
+                HidingTextLine()
+            }
             if let warning = model.warning {
                 Label {
                     Text(verbatim: warning)
@@ -55,18 +56,16 @@ struct BottomBar: View {
                     if let removal = model.removal {
                         if !removal.trashed.isEmpty {
                             Button("Put Back") { model.putBack() }
-                                .linkButton()
                         } else {
                             if model.canTrashRemoved {
                                 Button("Move to Trash") { model.trashRemoved() }
-                                    .linkButton()
                             }
                             Button("Undo") { model.undoRemoval() }
-                                .linkButton()
                         }
                     }
                 }
                 .font(.caption)
+                .controlSize(.small)
             }
             let summary = Text(verbatim: model.summary)
                 .foregroundStyle(.secondary)
@@ -127,15 +126,19 @@ struct HidingTextLine: View {
 
     var body: some View {
         if let line = model.hidingLine {
-            HStack(spacing: 6) {
-                Image(systemName: "text.redaction")
-                    .foregroundStyle(Color.accentColor)
-                Text(verbatim: line)
-                    .foregroundStyle(.secondary)
-                Button("Change…") { model.showsHideTextList = true }
-                    .linkButton()
+            Button { model.showsHideTextList = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "text.redaction")
+                        .foregroundStyle(Color.accentColor)
+                    Text(verbatim: line)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
+            .buttonStyle(.plain)
             .font(.caption)
+            .help("Change what's redacted")
         }
     }
 }
@@ -175,18 +178,19 @@ struct SavedVideosLine: View {
                     .truncationMode(.middle)
                     .onDrag { NSItemProvider(contentsOf: video) ?? NSItemProvider() }
                     .help(abbreviatedPath(video))
-                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([video]) }
-                    .linkButton()
-                Button("Open") { NSWorkspace.shared.open(video) }
-                    .linkButton()
-                ShareLink(item: video) { Text("Share…") }
-                    .linkButton()
-                if model.hiddenRecord(for: video)?.places.isEmpty == false {
-                    Button("Check Redactions…") { model.checkHiddenText(in: video) }
-                        .linkButton()
+                Spacer(minLength: 8)
+                Group {
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([video]) }
+                    Button("Open") { NSWorkspace.shared.open(video) }
+                    ShareLink(item: video) { Text("Share…") }
+                    if model.hiddenRecord(for: video)?.places.isEmpty == false {
+                        Button("Check Redactions…") { model.checkHiddenText(in: video) }
+                    }
                 }
+                .fixedSize()
             }
             .font(.caption)
+            .controlSize(.small)
             if let note = model.staleNote(for: video) {
                 Text(verbatim: note)
                     .font(.caption)
@@ -226,11 +230,16 @@ struct StatusView: View {
                 .buttonStyle(.plain)
                 .help("Preview the saved video")
                 .onDrag { NSItemProvider(contentsOf: output) ?? NSItemProvider() }
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     Label {
-                        Text(verbatim: "Saved \(output.lastPathComponent) · \(formatBytes(outputBytes))\(savings(outputBytes, inputBytes))")
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        HStack(spacing: 6) {
+                            Text(verbatim: output.lastPathComponent)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(verbatim: "\(formatBytes(outputBytes))\(savings(outputBytes, inputBytes))")
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
+                        }
                     } icon: {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
@@ -256,14 +265,8 @@ struct StatusView: View {
                                 Button("Check Redactions…") { model.checkHiddenText(in: output) }
                             }
                         }
-                        if needsCheck {
-                            Button("Clear Session") { model.clearSession() }
-                                .help("Start a new session. You can choose to move its files to the Trash.")
-                        } else {
-                            Button("Clear Session") { model.clearSession() }
-                                .buttonStyle(.borderedProminent)
-                                .help("Start a new session. You can choose to move its files to the Trash.")
-                        }
+                        Button("Clear Session") { model.clearSession() }
+                            .help("Start a new session. You can choose to move its files to the Trash.")
                     }
                 }
             }

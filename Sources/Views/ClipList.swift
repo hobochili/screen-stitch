@@ -32,26 +32,39 @@ struct ClipListHeader: View {
     @Environment(StitchModel.self) private var model
 
     var body: some View {
-        HStack(spacing: 16) {
-            Text(verbatim: model.clips.count == 1 ? "Session · 1 clip" : "Session · \(model.clips.count) clips")
-                .font(.headline)
-            Text(model.isDateOrdered ? "In recording order. Drag to reorder." : "Custom order. New clips go at the end.")
-                .foregroundStyle(.secondary)
-            Spacer()
-            Menu("Title Cards") {
-                if model.hasBeforeAndAfter || model.canAddBeforeAndAfter {
-                    Toggle("Before & After", isOn: Binding(get: { model.hasBeforeAndAfter }, set: { _ in model.toggleBeforeAndAfter() }))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 16) {
+                Text(verbatim: model.clips.count == 1 ? "Session · 1 clip" : "Session · \(model.clips.count) clips")
+                    .font(.headline)
+                    .fixedSize()
+                if !model.hasDraggedClips {
+                    Text("Drag clips to reorder them.")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                Button("Add Title Card") { model.addTitleCard() }
+                Spacer(minLength: 0)
+                Menu("Title Cards") {
+                    if model.hasBeforeAndAfter || model.canAddBeforeAndAfter {
+                        Toggle("Before & After", isOn: Binding(get: { model.hasBeforeAndAfter }, set: { _ in model.toggleBeforeAndAfter() }))
+                    }
+                    Button("Add Title Card") { model.addTitleCard() }
+                }
+                .fixedSize()
+                .help("Add text shown between clips in the combined video")
+                HideTextButton()
+                Button("Sort by Date") { model.sortByDate() }
+                    .fixedSize()
+                    .disabled(model.isDateOrdered || model.clips.count < 2)
+                    .help("Put the clips back in the order they were recorded")
+                // The saved video's card has its own Clear Session.
+                if case .done = model.state {
+                } else {
+                    Button("Clear Session") { model.clearSession() }
+                        .fixedSize()
+                        .help("Start a new session. You can choose to move its files to the Trash.")
+                }
             }
-            .fixedSize()
-            .help("Add text shown between clips in the combined video")
-            HideTextButton()
-            Button("Sort by Date") { model.sortByDate() }
-                .disabled(model.isDateOrdered || model.clips.count < 2)
-                .help("Put the clips back in the order they were recorded")
-            Button("Clear Session") { model.clearSession() }
-                .help("Start a new session. You can choose to move its files to the Trash.")
+            HidingTextLine()
         }
         .controlSize(.small)
         .padding(.horizontal, 16)
@@ -60,25 +73,15 @@ struct ClipListHeader: View {
     }
 }
 
-// Shows plainly when text is being hidden, so a list remembered from an earlier session isn't forgotten.
 struct HideTextButton: View {
     @Environment(StitchModel.self) private var model
 
     var body: some View {
-        if model.activeHiddenText.isEmpty {
-            Button { model.showsHideTextList = true } label: {
-                Label("Redact Text…", systemImage: "text.redaction")
-            }
-            .fixedSize()
-            .help("Redact text, such as card digits, everywhere it appears in the video")
-        } else {
-            Button { model.showsHideTextList = true } label: {
-                Label("Redact Text…", systemImage: "text.redaction")
-            }
-            .buttonStyle(.borderedProminent)
-            .fixedSize()
-            .help(model.hidingLine ?? "")
+        Button { model.showsHideTextList = true } label: {
+            Label("Redact Text…", systemImage: "text.redaction")
         }
+        .fixedSize()
+        .help("Redact text, such as card digits, everywhere it appears in the video")
     }
 }
 
@@ -184,9 +187,6 @@ struct LastTargetLine: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-        } else {
-            Text("Pick a window, display or area to record. The recording is added to this session when you stop.")
-                .foregroundStyle(.secondary)
         }
     }
 }

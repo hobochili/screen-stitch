@@ -662,6 +662,14 @@ enum TextFinder {
         request.recognitionLevel = level
         request.usesLanguageCorrection = false
         try VNImageRequestHandler(cvPixelBuffer: buffer).perform([request])
+        guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { throw CocoaError(.fileReadUnknown) }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let frame = CVPixelBufferGetBaseAddress(buffer).flatMap { base in
+            CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA
+                ? TextLook.Frame(base: base, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), width: CVPixelBufferGetWidth(buffer),
+                                 height: CVPixelBufferGetHeight(buffer))
+                : nil
+        }
         var found: [TextTracker.Found] = []
         for observation in request.results ?? [] {
             for candidate in observation.topCandidates(3) {
@@ -669,18 +677,58 @@ enum TextFinder {
                     for (range, missing) in matches(of: text, in: candidate.string) {
                         // Text read without a box of its own gets its whole line's.
                         var box = (try? candidate.boundingBox(for: range))??.boundingBox ?? observation.boundingBox
+                        let character = box.width / Double(max(text.count - missing, 1))
                         // A reading a character short may have dropped one that's still visible, on either side.
                         if missing > 0 {
-                            let character = box.width / Double(max(text.count - missing, 1))
                             box = box.insetBy(dx: -character * Double(missing), dy: 0)
                         }
-                        found = TextTracker.merge(found, [.init(text: text, box: CGRect(x: box.minX, y: 1 - box.maxY, width: box.width,
-                                                                                        height: box.height))])
+                        var flipped = CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
+                        if let frame {
+                            flipped = inked(flipped, in: frame, sideways: character * Double(missing + 1))
+                        }
+                        found = TextTracker.merge(found, [.init(text: text, box: flipped)])
                     }
                 }
             }
         }
         return found
+    }
+
+    // Careful readings box a word with half a space either side and room above and below, reaching toward the next word
+    // or line. This trims blank edges, by at most `sideways` across and a third of the box up or down.
+    static func inked(_ box: CGRect, in frame: TextLook.Frame, sideways: Double) -> CGRect {
+        let width = Double(frame.width), height = Double(frame.height)
+        let x0 = max(Int((box.minX * width).rounded(.down)), 0), x1 = min(Int((box.maxX * width).rounded(.up)), frame.width)
+        let y0 = max(Int((box.minY * height).rounded(.down)), 0), y1 = min(Int((box.maxY * height).rounded(.up)), frame.height)
+        guard x1 - x0 >= 4, y1 - y0 >= 4 else { return box }
+        var edge: [Double] = []
+        for x in x0..<x1 { edge += [frame.brightness(x, y0)!, frame.brightness(x, y1 - 1)!] }
+        for y in y0..<y1 { edge += [frame.brightness(x0, y)!, frame.brightness(x1 - 1, y)!] }
+        let background = edge.sorted()[edge.count / 2]
+        var columns = [Double](repeating: 0, count: x1 - x0), rows = [Double](repeating: 0, count: y1 - y0)
+        for y in y0..<y1 {
+            for x in x0..<x1 {
+                let contrast = abs(frame.brightness(x, y)! - background)
+                columns[x - x0] = max(columns[x - x0], contrast)
+                rows[y - y0] = max(rows[y - y0], contrast)
+            }
+        }
+        // Text too faint to tell from the background keeps its box as read.
+        let strongest = columns.max() ?? 0
+        guard strongest >= 24 else { return box }
+        let ink = strongest / 4
+        let across = Int(sideways * width), down = (y1 - y0) / 3
+        let left = min(columns.firstIndex { $0 >= ink } ?? 0, across)
+        let right = min(columns.count - 1 - (columns.lastIndex { $0 >= ink } ?? columns.count - 1), across)
+        // A line's letters leave no blank row from top to bottom, so ink past a blank row is the next line's.
+        var first = rows.firstIndex { $0 >= ink } ?? 0, last = rows.lastIndex { $0 >= ink } ?? rows.count - 1
+        if rows[rows.count / 2] >= ink {
+            first = rows[..<(rows.count / 2)].lastIndex { $0 < ink }.map { $0 + 1 } ?? 0
+            last = rows[(rows.count / 2)...].firstIndex { $0 < ink }.map { $0 - 1 } ?? rows.count - 1
+        }
+        let top = min(first, down), bottom = min(rows.count - 1 - last, down)
+        return CGRect(x: Double(x0 + left) / width, y: Double(y0 + top) / height, width: Double(x1 - x0 - left - right) / width,
+                      height: Double(y1 - y0 - top - bottom) / height)
     }
 
     // Every place `text` appears, ignoring case and look-alikes such as l and 1, plus words of four or more characters one

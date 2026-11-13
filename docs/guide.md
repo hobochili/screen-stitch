@@ -10,10 +10,11 @@ combine them. When you're done, click **Clear Session** to start the next one. S
 launches (see [Starting over](#starting-over)).
 
 Before you have any clips, the window shows a big red **Record Screen** button, with **Add Videos…** below it. After
-that, it shows the list of clips. **Title Cards**, **Sort by Date** and **Clear Session** are in the header above the
-list, and **Record Another** is just below it. The bottom bar, along the bottom of the window, is where you choose
-**Resolution** and **Quality** and combine the clips. The toolbar at the top has **Record Microphone**,
-**Watch for Recordings** and **Add Videos…**. Until you have a clip, **Watch for Recordings** is only in the File menu.
+that, it shows the list of clips. **Title Cards**, **Redact Text…**, **Sort by Date** and **Clear Session** are in the
+header above the list, and **Record Another** is just below it. The bottom bar, along the bottom of the window, is where
+you choose **Resolution** and **Quality** and combine the clips. The toolbar at the top has **Record Microphone**,
+**Watch for Recordings** and **Add Videos…**, and **Exports** once you've combined something. Until you have a clip,
+**Watch for Recordings** is only in the File menu.
 
 ## Recording
 
@@ -157,9 +158,9 @@ see what was under it. Your original recordings are unchanged, so share only the
 
 The sheet lists your text with a checkbox on each. A checked entry is redacted, and the status beside it says how often
 it was found. Uncheck an entry to stop redacting it for now, or click ⓧ (**Stop Redacting**) to remove it. Screen Stitch
-remembers the list between sessions, so **Redact Text…** is filled in while redaction is on and anything is checked. The bottom bar shows
-what's redacted, for example "Redacting 9611 and 9820 · Looking through clip 2 of 5…", with **Change…** to reopen the
-sheet.
+remembers the list between sessions. While anything is redacted, a line under the list header says what, for example
+"Redacting 9611 and 9820 · Looking through clip 2 of 5…". Click it to reopen the sheet. Before you have any clips, the
+line is in the bottom bar.
 
 The switch at the top right of the sheet turns redaction on or off. Off keeps your list but redacts nothing, and the
 list turns grey. **Clear List…** at the bottom left removes every entry, after asking first.
@@ -177,12 +178,13 @@ compresses. The bottom bar shows each step, such as "Looking through clip 2 of 5
 If a clip can't be searched, the list and the bottom bar say "Couldn't search “clip name”". Combining tries the search
 again first. If it still fails, combining stops and the message says to remove the clip or uncheck the text.
 
-Before you share the video, click **Check Redactions…** on the saved-video card (or the link on the **Saved** line). A
-sheet plays the saved video and lists every place text was redacted. Click one, or use the arrows, to play it, and check
-the box covers the text. If you can still read something, click **Still see something?**, then **Redact More Text…**,
-add the text the way it appears, and combine again. That searches every clip for the new text, so it takes a while. If
-you add text after saving, the card is replaced by the compact **Saved** line, which says "This video doesn't redact
-“4242”. Combine again to redact it."
+Before you share the video, click **Check Redactions…** on the saved-video card (or the button on the **Saved** line). A
+sheet shows the saved video and lists every spot where text was redacted, each with a picture of its box. Click one, or
+use the arrows, and the video stops on the moment the text first shows, with that box outlined in yellow. Check the box
+covers the text, then press play to watch it through. If you can still read something, click **Still see something?**,
+then **Redact More Text…**, add the text the way it appears, and combine again. That searches every clip for the new
+text, so it takes a while. If you add text after saving, the card is replaced by the compact **Saved** line, which says
+"This video doesn't redact “4242”. Combine again to redact it."
 
 - Type the text as it appears on screen. Capital letters don't matter.
 - Text needs at least 2 characters. Text under 4 characters matches only as a separate word, so "MN" covers "MN 55407"
@@ -204,10 +206,11 @@ background, so you can clear the session, record and combine again while it work
 the order you started them. The bottom bar shows the one being saved, for example "Saving “Demo.mp4” · Compressing · 40%
 · about 2 minutes left · 1 more waiting". **Cancel** stops it and deletes the unfinished file.
 
-**Details** in the bottom bar opens the **Exports** list: every video since you opened Screen Stitch, with what it's
-doing, a button to cancel it, and **Show in Finder** once it's saved. **Clear Finished** empties the finished ones.
-**Show Log** opens the **Export Log**, which is also in the Window menu. It lists what searches and exports did, with
-the time of each step, which helps when something is slow or fails. **Copy All** copies it and **Clear** empties it.
+**Details** in the bottom bar, or **Exports** in the toolbar, opens the **Exports** list: every video since you opened
+Screen Stitch, with what it's doing, a button to cancel it, and **Show in Finder** once it's saved. **Clear Finished**
+empties the finished ones. **Show Log** opens the **Export Log**, which is also in the Window menu. It lists what
+searches and exports did, with the time of each step, which helps when something is slow or fails. **Copy All** copies
+it and **Clear** empties it.
 
 If you clear the session before a video is done, the video is still saved where you chose, but it isn't added to the new
 session. A video being saved also keeps its clips in place. See [Removing clips](#removing-clips).
@@ -238,8 +241,8 @@ Stitch, the clips, the text to redact, the title cards and the order are back. A
 be read any more, is left out, and a warning names it. The **Saved** line for your videos comes back too, but the full
 card doesn't.
 
-Click **Clear Session** (⌘N) to empty the list and begin a new session. It's in the list header, and on the
-saved-video card. Screen Stitch asks what to do with the files first:
+Click **Clear Session** (⌘N) to empty the list and begin a new session. It's in the list header, or on the saved-video
+card while that shows. Screen Stitch asks what to do with the files first:
 
 | Choice | What happens |
 | :--- | :--- |

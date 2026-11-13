@@ -149,6 +149,10 @@ final class StitchModel {
     var outputThumbnail: NSImage?
     // Set while Quick Look shows the saved video rather than the selected clips.
     @ObservationIgnored private var quickLookOutput: URL?
+    // Once a clip has been dragged, the header stops saying that clips can be dragged.
+    var hasDraggedClips = StitchModel.defaults.bool(forKey: "hasDraggedClips") {
+        didSet { StitchModel.defaults.set(hasDraggedClips, forKey: "hasDraggedClips") }
+    }
     var recordMicrophone = StitchModel.defaults.bool(forKey: "recordMicrophone") {
         didSet { StitchModel.defaults.set(recordMicrophone, forKey: "recordMicrophone") }
     }
@@ -920,6 +924,7 @@ final class StitchModel {
     func move(from source: IndexSet, to destination: Int) {
         items.move(fromOffsets: source, toOffset: destination)
         isManuallyOrdered = true
+        hasDraggedClips = true
         clearResult()
     }
 
@@ -1239,7 +1244,7 @@ final class StitchModel {
                     }
                     if !found.isEmpty { tracks[clip.id] = found }
                 }
-                export.record = hiddenRecord(items: export.items, texts: texts, tracks: tracks)
+                export.record = hiddenRecord(items: export.items, texts: texts, tracks: tracks, size: export.size)
 
                 let coverShare = tracks.isEmpty ? 0 : 0.2
                 let coverTotal = max(clips.filter { tracks[$0.id] != nil }.reduce(0) { $0 + $1.duration }, 0.001)

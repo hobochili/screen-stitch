@@ -3,12 +3,12 @@
 // Writes a copy of a clip with hidden text covered by solid boxes, for FFmpeg to use in place of the original. Sound is
 // copied as it is.
 enum TextCover {
-    // The box drawn over a track's box, in pixels from the top left. It's padded, since recognition's boxes hug the
-    // letters and a sliver of a digit can still be read.
-    static func rect(for box: CGRect, width: Double, height: Double) -> CGRect {
+    // The box drawn over a track's box, in pixels from the top left. The padding covers slivers of letters at the edges
+    // and stops short of the next word or line.
+    static func rect(for box: CGRect, characters: Int, width: Double, height: Double) -> CGRect {
         let rect = CGRect(x: box.minX * width, y: box.minY * height, width: box.width * width, height: box.height * height)
-        let pad = max(3, rect.height * 0.35)
-        return rect.insetBy(dx: -pad, dy: -pad).integral
+        let across = max(3, rect.width / Double(max(characters, 1)) * 0.4), down = max(3, rect.height * 0.3)
+        return rect.insetBy(dx: -across, dy: -down).integral
     }
 
     static func write(_ source: URL, covering tracks: [TextTrack], to output: URL,
@@ -185,8 +185,8 @@ enum TextCover {
         // Every box is checked against the picture before any is drawn, since boxes can overlap.
         var drawn: [CGRect] = []
         for (index, box) in boxes {
-            let rect = rect(for: box, width: Double(width), height: Double(height))
             let track = tracks[index]
+            let rect = rect(for: box, characters: track.text.count, width: Double(width), height: Double(height))
             if track.isSighted(at: time) {
                 looks[index] = TextLook(frame, rect)
             } else if let look = time > track.sightings[0].time ? looks[index] : firstLooks[index], !look.matches(frame, rect) {
@@ -207,7 +207,7 @@ enum TextCover {
 final class LookAhead {
     private let reader: AVAssetReader
     private let output: AVAssetReaderTrackOutput
-    private var firsts: [(time: Double, track: Int, box: CGRect)]
+    private var firsts: [(time: Double, track: Int, box: CGRect, characters: Int)]
     private var readTo = -Double.infinity
     private(set) var looks: [Int: TextLook] = [:]
 
@@ -215,7 +215,8 @@ final class LookAhead {
         reader = try AVAssetReader(asset: asset)
         output = AVAssetReaderTrackOutput(track: video, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
         reader.add(output)
-        firsts = tracks.indices.map { (tracks[$0].sightings[0].time, $0, tracks[$0].sightings[0].box) }.sorted { $0.time < $1.time }
+        firsts = tracks.indices.map { (tracks[$0].sightings[0].time, $0, tracks[$0].sightings[0].box, tracks[$0].text.count) }
+            .sorted { $0.time < $1.time }
         guard firsts.isEmpty || reader.startReading() else { throw reader.error ?? CocoaError(.fileReadUnknown) }
     }
 
@@ -236,7 +237,8 @@ final class LookAhead {
             let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
             let frame = TextLook.Frame(base: base, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), width: width, height: height)
             for first in due where abs(first.time - readTo) < 0.0005 {
-                looks[first.track] = TextLook(frame, TextCover.rect(for: first.box, width: Double(width), height: Double(height)))
+                looks[first.track] = TextLook(frame, TextCover.rect(for: first.box, characters: first.characters, width: Double(width),
+                                                                    height: Double(height)))
             }
         }
     }

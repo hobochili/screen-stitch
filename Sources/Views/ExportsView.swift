@@ -5,7 +5,6 @@ struct ExportsLine: View {
     @Environment(StitchModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
         if let export = model.runningExport ?? model.exports.first(where: { $0.status == .waiting }) {
             let waiting = model.exports.filter { $0.status == .waiting && $0 !== export }.count
             HStack(spacing: 12) {
@@ -16,13 +15,9 @@ struct ExportsLine: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Button("Details") { model.showsExports.toggle() }
-                    .linkButton()
-                    .popover(isPresented: $model.showsExports, arrowEdge: .top) {
-                        ExportsList()
-                            .environment(model)
-                    }
                 Spacer(minLength: 0)
+                // Opens the list from the toolbar's Exports button.
+                Button("Details") { model.showsExports.toggle() }
                 Button("Cancel") { model.cancel(export) }
             }
         }
