@@ -170,7 +170,7 @@ final class RecordingFlow {
     }
 
     private func beginRecordingFlow(reusingLast: Bool) {
-        guard state == .idle, let model, !model.isEncoding else { return }
+        guard state == .idle, let model else { return }
         model.warning = nil
         do {
             try FileManager.default.createDirectory(at: model.recordingsFolder, withIntermediateDirectories: true)

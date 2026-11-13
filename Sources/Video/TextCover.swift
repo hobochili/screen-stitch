@@ -12,7 +12,8 @@ enum TextCover {
     }
 
     static func write(_ source: URL, covering tracks: [TextTrack], to output: URL,
-                      progress: @escaping @Sendable (Double) -> Void = { _ in }, stop: CancelFlag = CancelFlag()) async throws {
+                      progress: @escaping @Sendable (Double) -> Void = { _ in }, stop: CancelFlag = CancelFlag(),
+                      pause: PauseGate = PauseGate()) async throws {
         let asset = AVURLAsset(url: source)
         guard let video = try await asset.loadTracks(withMediaType: .video).first else { throw CocoaError(.fileReadCorruptFile) }
         let audio = try await asset.loadTracks(withMediaType: .audio)
@@ -29,7 +30,7 @@ enum TextCover {
                 continuation.resume(with: Result {
                     try write(asset: asset, video: video, audio: Array(zip(audio, audioFormats)), size: size, transform: transform,
                               color: color, duration: duration, tracks: tracks.map { $0.steadied() }, to: output, progress: progress,
-                              stop: stop)
+                              stop: stop, pause: pause)
                 })
             }
         }
@@ -37,7 +38,7 @@ enum TextCover {
 
     private static func write(asset: AVURLAsset, video: AVAssetTrack, audio: [(AVAssetTrack, CMFormatDescription?)], size: CGSize,
                               transform: CGAffineTransform, color: [String: String]?, duration: Double, tracks: [TextTrack], to output: URL,
-                              progress: @escaping @Sendable (Double) -> Void, stop: CancelFlag) throws {
+                              progress: @escaping @Sendable (Double) -> Void, stop: CancelFlag, pause: PauseGate) throws {
         try? FileManager.default.removeItem(at: output)
         let reader = try AVAssetReader(asset: asset)
         let writer = try AVAssetWriter(outputURL: output, fileType: .mov)
@@ -89,6 +90,9 @@ enum TextCover {
         group.enter()
         videoInput.requestMediaDataWhenReady(on: queue) {
             while videoInput.isReadyForMoreMediaData {
+                while pause.isPaused, !stop.isSet {
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
                 guard !stop.isSet, let sample = videoOutput.copyNextSampleBuffer() else {
                     videoInput.markAsFinished()
                     group.leave()
@@ -176,5 +180,17 @@ enum TextCover {
             // CoreGraphics counts from the bottom.
             context.fill(CGRect(x: rect.minX, y: Double(height) - rect.maxY, width: rect.width, height: rect.height))
         }
+    }
+}
+
+// Holds a copy between frames while a recording needs the Mac's video encoder.
+final class PauseGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paused = false
+
+    var isPaused: Bool { lock.withLock { paused } }
+
+    func set(_ on: Bool) {
+        lock.withLock { paused = on }
     }
 }

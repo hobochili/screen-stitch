@@ -135,7 +135,7 @@ struct EncodeCleanupTests {
 
     private func waitWhileEncoding(_ model: StitchModel) async throws {
         var waited = 0
-        while model.isEncoding, waited < 400 {
+        while model.isExporting, waited < 400 {
             try await Task.sleep(for: .milliseconds(50))
             waited += 1
         }

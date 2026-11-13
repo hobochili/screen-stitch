@@ -233,7 +233,7 @@ import Vision
 
     // Waits for the background search to look through every clip.
     private func searched(_ model: StitchModel) async throws {
-        for _ in 0..<600 where model.clips.contains(where: model.needsSearch) || model.searchingClip != nil {
+        for _ in 0..<600 where model.clips.contains(where: { model.needsSearch($0) }) || model.searchingClip != nil {
             try await Task.sleep(for: .milliseconds(100))
         }
     }
@@ -274,7 +274,7 @@ import Vision
         let before = try covered()
         let output = folder.file("out.mp4")
         model.encode(to: output)
-        while model.isEncoding {
+        while model.isExporting {
             try await Task.sleep(for: .milliseconds(100))
         }
         if case let .failed(message) = model.state { Issue.record("\(message)") }
@@ -504,20 +504,37 @@ private func readText(_ url: URL) throws -> [String] {
 }
 
 @Suite struct SearchControlTests {
-    // A suspended worker only acts on SIGTERM once it's resumed, as when the text is unchecked during a recording.
-    @Test func stoppingEndsPausedWorkers() throws {
+    private func priority(of process: Process) throws -> Int {
+        Int(try run(URL(fileURLWithPath: "/bin/ps"), ["-o", "pri=", "-p", "\(process.processIdentifier)"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+    }
+
+    // While recording, workers drop to the background band, and a worker started meanwhile joins them.
+    @Test func workersMoveToTheBackgroundAndBack() throws {
         let control = SearchControl()
-        let worker = Process()
-        worker.executableURL = URL(fileURLWithPath: "/bin/sleep")
-        worker.arguments = ["30"]
-        try worker.run()
-        control.add(worker)
-        control.pause()
-        let started = Date()
+        let busy = { () throws -> Process in
+            let worker = Process()
+            worker.executableURL = URL(fileURLWithPath: "/usr/bin/yes")
+            worker.standardOutput = FileHandle.nullDevice
+            try worker.run()
+            return worker
+        }
+        let first = try busy()
+        control.add(first)
+        // The background band puts a process around priority 4, against about 31 normally, which moves a little with load.
+        control.setBackground(true)
+        let second = try busy()
+        control.add(second)
+        Thread.sleep(forTimeInterval: 0.3)
+        #expect(try priority(of: first) < 10)
+        #expect(try priority(of: second) < 10)
+        control.setBackground(false)
+        Thread.sleep(forTimeInterval: 0.3)
+        #expect(try priority(of: first) > 20)
         control.stop()
-        worker.waitUntilExit()
-        #expect(Date().timeIntervalSince(started) < 5)
-        #expect(worker.terminationReason == .uncaughtSignal)
+        first.waitUntilExit()
+        second.waitUntilExit()
+        #expect(first.terminationReason == .uncaughtSignal)
     }
 }
 

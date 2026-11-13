@@ -56,7 +56,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        model.recording.finishRecordingBeforeQuit { NSApp.reply(toApplicationShouldTerminate: true) } ? .terminateLater : .terminateNow
+        let unfinished = model.exports.filter(\.isActive)
+        if !unfinished.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = unfinished.count == 1 ? "Quit and stop saving “\(unfinished[0].name)”?" : "Quit and stop saving \(unfinished.count) videos?"
+            alert.informativeText = unfinished.count == 1
+                ? "The video isn't finished. If you quit, it's deleted and you'll need to combine again."
+                : "The videos aren't finished. If you quit, they're deleted and you'll need to combine again."
+            alert.addButton(withTitle: "Quit").hasDestructiveAction = true
+            alert.addButton(withTitle: "Cancel").keyEquivalent = "\r"
+            guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+        }
+        return model.recording.finishRecordingBeforeQuit { NSApp.reply(toApplicationShouldTerminate: true) } ? .terminateLater : .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {

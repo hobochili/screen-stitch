@@ -259,55 +259,48 @@ final class CancelFlag: @unchecked Sendable {
     }
 }
 
-// Stops or pauses a search. Pausing suspends its worker processes, so a search waits out a recording instead of
-// starting over.
+// Stops a search, or moves its worker processes into the background band while a recording needs the processors.
 final class SearchControl: @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
-    private var paused = false
+    private var background = false
     private var workers: [ObjectIdentifier: Process] = [:]
 
     var isStopped: Bool { lock.withLock { stopped } }
 
-    // A suspended worker doesn't act on SIGTERM until it's resumed, so paused workers are resumed first.
     func stop() {
         let running: [Process] = lock.withLock {
             stopped = true
-            if paused { workers.values.forEach { _ = $0.resume() } }
-            paused = false
             return Array(workers.values)
         }
         running.forEach { $0.terminate() }
     }
 
-    func pause() {
+    func setBackground(_ on: Bool) {
         lock.withLock {
-            guard !paused else { return }
-            paused = true
-            workers.values.forEach { _ = $0.suspend() }
-        }
-    }
-
-    func resume() {
-        lock.withLock {
-            guard paused else { return }
-            paused = false
-            workers.values.forEach { _ = $0.resume() }
+            guard background != on else { return }
+            background = on
+            workers.values.forEach { Self.setBackground(on, $0) }
         }
     }
 
     func add(_ process: Process) {
         lock.withLock {
             workers[ObjectIdentifier(process)] = process
-            if paused { _ = process.suspend() }
+            if background { Self.setBackground(true, process) }
         }
     }
 
     func remove(_ process: Process) {
         lock.withLock {
-            if paused { _ = process.resume() }
             workers[ObjectIdentifier(process)] = nil
         }
+    }
+
+    // The background band runs a process at low priority, mostly on the efficiency cores, with its disk use throttled.
+    static func setBackground(_ on: Bool, _ process: Process) {
+        guard process.isRunning else { return }
+        _ = setpriority(PRIO_DARWIN_PROCESS, id_t(process.processIdentifier), on ? PRIO_DARWIN_BG : 0)
     }
 }
 
@@ -340,6 +333,8 @@ enum TextFinder {
     // The program that reads frames, run as several workers with --find-text, since Vision reads one frame at a time in
     // each process.
     nonisolated(unsafe) static var worker = Bundle.main.executableURL!
+    // Told when a worker fails and its stretch is read again, for the Export Log.
+    nonisolated(unsafe) static var onRetry: (@Sendable (String) -> Void)?
 
     static var workerCount: Int {
         max(1, min(8, ProcessInfo.processInfo.activeProcessorCount - 2))
@@ -391,7 +386,9 @@ enum TextFinder {
                     group.addTask {
                         try await read(url, from: times[0], to: times[times.count - 1] + 0.001, pass: .careful, texts: texts,
                                        only: Set(times), control: control) { _ in
-                            let fraction = (Double(round) + Double(done.increment()) / Double(recheck.count)) / 3
+                            // Most rounds stop after the first, so it gets most of the bar, and the bar never stands still.
+                            let shares = [0.8, 0.15, 0.05]
+                            let fraction = shares[..<round].reduce(0, +) + shares[round] * Double(done.increment()) / Double(recheck.count)
                             rereadReporter.report(part: 0, of: 1, fraction: fraction)
                         }
                     }
@@ -433,7 +430,8 @@ enum TextFinder {
                              onFrame: @escaping @Sendable (Double) -> Void) async throws -> [TextTracker.Frame] {
         do {
             return try await readOnce(url, from: start, to: end, pass: pass, texts: texts, only: only, control: control, onFrame: onFrame)
-        } catch TextFinderError.failed {
+        } catch let TextFinderError.failed(message) {
+            onRetry?(String(format: "%@ Reading %.0f–%.0f s of “%@” again.", message, start, min(end, 1e6), url.lastPathComponent))
             return try await readOnce(url, from: start, to: end, pass: pass, texts: texts, only: only, control: control, onFrame: onFrame)
         }
     }

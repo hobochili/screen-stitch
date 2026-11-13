@@ -91,15 +91,14 @@ struct ContentView: View {
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard !model.isEncoding else { return false }
             model.add(urls)
             return true
         } isTargeted: { targeted in
-            model.isDropTargeted = targeted && !model.isEncoding
+            model.isDropTargeted = targeted
         }
         // The toolbar waits until there's a clip. Before then, the start screen and the File menu offer the same things.
         .toolbar {
-            let locked = model.isEncoding || model.tools == nil
+            let locked = model.tools == nil
             if !model.clips.isEmpty {
                 ToolbarItemGroup {
                     Toggle(isOn: Binding(get: { model.recordMicrophone }, set: { model.recordMicrophone = $0 })) {

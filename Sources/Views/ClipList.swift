@@ -22,7 +22,6 @@ struct ClipList: View {
             }
             // Delete removes the selected rows from the list, and ⌘Delete (in the Edit menu) moves clips to the Trash.
             .onDeleteCommand { model.remove(model.selection) }
-            .disabled(model.isEncoding)
             Divider()
             RecordAnotherBar()
         }
@@ -57,7 +56,7 @@ struct ClipListHeader: View {
         .controlSize(.small)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .disabled(model.isEncoding || model.recording.isRecording)
+        .disabled(model.recording.isRecording)
     }
 }
 
@@ -105,7 +104,7 @@ struct RecordAnotherBar: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .disabled(model.isEncoding || model.recording.isRecording)
+        .disabled(model.recording.isRecording)
     }
 }
 

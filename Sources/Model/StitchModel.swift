@@ -7,7 +7,6 @@ import SwiftUI
 
 enum EncodeState: Equatable {
     case idle
-    case encoding
     case done(output: URL, outputBytes: Int64, inputBytes: Int64)
     case failed(String)
 }
@@ -25,6 +24,9 @@ final class StitchModel {
     init(capture: CaptureSource? = nil, overlays: RecordingOverlays? = nil) {
         recording = RecordingFlow(model: self, source: capture ?? LiveCaptureSource(),
                                   overlays: overlays ?? LiveRecordingOverlays(model: self))
+        TextFinder.onRetry = { [weak self] text in
+            Task { @MainActor in self?.log(text) }
+        }
     }
     // The session is the list of clips and title cards, and the video made from them. The last target only matters
     // while recording a series, so a session without clips forgets it.
@@ -94,7 +96,6 @@ final class StitchModel {
             }
         }
     }
-    var progress = 0.0
     var notice: String? {
         didSet {
             removal = nil
@@ -191,8 +192,13 @@ final class StitchModel {
     var hiddenTextReview: HiddenTextReview?
     // Set by the review's Redact More Text…, which opens the list once the review has closed.
     var opensHideTextListAfterReview = false
-    // What an export is doing before FFmpeg starts, such as covering hidden text.
-    private(set) var encodeStep: String?
+    // Combines and compresses, oldest first: running, waiting and finished.
+    var exports: [Export] = []
+    var showsExports = false
+    // What exports and searches have done, for the Export Log window.
+    private(set) var logLines: [LogLine] = []
+    // Goes up when the session is cleared, so an export finishing later only shows in the session it came from.
+    private(set) var sessionNumber = 0
 
     private var probing: Set<URL> = []
     private var isManuallyOrdered = false {
@@ -201,23 +207,12 @@ final class StitchModel {
     @ObservationIgnored private var watchTimer: Timer?
     @ObservationIgnored private var seenFiles: Set<URL> = []
     @ObservationIgnored private var pendingSizes: [URL: Int] = [:]
-    @ObservationIgnored private var run: FFmpegRun?
-    @ObservationIgnored private var job: EncodeJob?
-    @ObservationIgnored private var startedAt = Date()
-    @ObservationIgnored private var cancelled = false
-    @ObservationIgnored private var activity: NSObjectProtocol?
-    @ObservationIgnored private var coverStop: CancelFlag?
-    @ObservationIgnored private var pendingRecord: HiddenRecord?
-    // Covered copies made for the export in progress, deleted if it stops before FFmpeg takes them over.
-    @ObservationIgnored private var coverCopies: [URL] = []
-    // Where FFmpeg's share of the progress bar starts, after searching and covering.
-    @ObservationIgnored private var progressBase = 0.0
     @ObservationIgnored private var searchUpdatePending = false
     var isProbing: Bool { !probing.isEmpty }
     var isWatching: Bool { watchFolder != nil }
     var hasBottomBar: Bool {
         !clips.isEmpty || isWatching || warning != nil || notice != nil || state != .idle || recording.isCapturing
-            || !savedVideos.isEmpty || !activeHiddenText.isEmpty
+            || !savedVideos.isEmpty || !activeHiddenText.isEmpty || isExporting
     }
 
     // Every video saved this session that's still there, newest first. Unlike existingOutputs, this includes one added
@@ -235,13 +230,21 @@ final class StitchModel {
     var showsSavedLine: Bool {
         switch state {
         case .idle, .failed: shownSavedVideo != nil
-        case .encoding, .done: false
+        case .done: false
         }
     }
     nonisolated static let defaultRecordingsFolder = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Movies/Screen Stitch", isDirectory: true)
 
-    var isEncoding: Bool { state == .encoding }
+    var isExporting: Bool { exports.contains(where: \.isActive) }
+    var runningExport: Export? { exports.first { $0.status == .running } }
+    // Files an unfinished export reads from, which can't go to the Trash until it's done.
+    var clipsInUse: Set<URL> { Set(exports.filter(\.isActive).flatMap { $0.clips.map(\.url) }) }
+
+    private func inUseWarning(_ clips: [Clip]) -> String {
+        clips.count == 1 ? "“\(clips[0].name)” is part of a video that's still being saved. Move it to the Trash once that's done."
+            : "\(clips.count) of these clips are part of videos that are still being saved. Move them to the Trash once that's done."
+    }
     var totalDuration: Double { clips.reduce(0) { $0 + $1.duration } + titleCards.reduce(0) { $0 + $1.duration } }
     var totalBytes: Int64 { clips.reduce(0) { $0 + $1.fileSize } }
 
@@ -255,11 +258,19 @@ final class StitchModel {
         return "\(count) · \(formatDuration(totalDuration)) · \(formatBytes(totalBytes)) · Output \(width)×\(height)"
     }
 
-    var progressText: String {
-        let percent = (encodeStep.map { "\($0) · " } ?? "") + "\(Int(progress * 100))%"
-        guard progress > 0.02 else { return percent }
-        let remaining = Date().timeIntervalSince(startedAt) / progress * (1 - progress)
-        return remaining < 60 ? "\(percent) · under a minute left" : "\(percent) · about \(Int((remaining / 60).rounded())) min left"
+    func log(_ text: String) {
+        logLines.append(LogLine(date: Date(), text: text))
+        if logLines.count > 3000 {
+            logLines.removeFirst(logLines.count - 3000)
+        }
+    }
+
+    func clearLog() {
+        logLines = []
+    }
+
+    func clearFinishedExports() {
+        exports.removeAll { !$0.isActive }
     }
 
     func chooseFiles() {
@@ -274,7 +285,7 @@ final class StitchModel {
     }
 
     func add(_ urls: [URL]) {
-        guard let tools, !isEncoding else { return }
+        guard let tools else { return }
         let known = Set(clips.map(\.url)).union(probing)
         var fresh: [URL] = []
         for url in urls.map(\.standardizedFileURL) where !known.contains(url) && !fresh.contains(url) {
@@ -580,7 +591,7 @@ final class StitchModel {
 
     // A file is added once its size stops changing, so recordings still being written are skipped until finished.
     private func checkWatchFolder() {
-        guard let folder = watchFolder, !isEncoding, !recording.isRecording else { return }
+        guard let folder = watchFolder, !recording.isRecording else { return }
         var ready: [URL] = []
         for (url, size) in Self.movies(in: folder) where !seenFiles.contains(url) {
             if size > 0, pendingSizes[url] == size {
@@ -681,7 +692,7 @@ final class StitchModel {
             QLPreviewPanel.shared().orderOut(nil)
             return true
         }
-        guard let first = items.first, !isEncoding else { return false }
+        guard let first = items.first else { return false }
         if selection.isEmpty {
             selection = [first.id]
         }
@@ -727,6 +738,12 @@ final class StitchModel {
     // Recordings made in this session go straight to the Trash, as files do in the Finder. Videos added from elsewhere
     // weren't made here, so Screen Stitch asks first.
     func trashItems(_ ids: Set<UUID>) {
+        let inUse = clipsInUse
+        let busy = clips.filter { ids.contains($0.id) && inUse.contains($0.url) }
+        guard busy.isEmpty else {
+            warning = inUseWarning(busy)
+            return
+        }
         guard let prompt = trashPrompt(for: ids) else {
             trash(ids)
             return
@@ -759,6 +776,12 @@ final class StitchModel {
     // Moves the clips' files to the Trash and takes their rows, and any title cards chosen with them, out of the list.
     // A clip whose file can't be moved stays.
     func trash(_ ids: Set<UUID>) {
+        let inUse = clipsInUse
+        let busy = clips.filter { ids.contains($0.id) && inUse.contains($0.url) }
+        guard busy.isEmpty else {
+            warning = inUseWarning(busy)
+            return
+        }
         let result = moveFilesToTrash(clips.filter { ids.contains($0.id) })
         let removal = takeOut(ids.subtracting(result.failed.map(\.id)))
         if let removal {
@@ -771,6 +794,12 @@ final class StitchModel {
     // The notice's Move to Trash, for clips just removed from the list.
     func trashRemoved() {
         guard let removal, canTrashRemoved else { return }
+        let inUse = clipsInUse
+        let busy = removal.before.compactMap(\.clip).filter { removal.removed.contains($0.id) && inUse.contains($0.url) }
+        guard busy.isEmpty else {
+            warning = inUseWarning(busy)
+            return
+        }
         let result = moveFilesToTrash(removal.before.compactMap(\.clip).filter { removal.removed.contains($0.id) })
         if result.moved.isEmpty {
             notice = nil
@@ -945,9 +974,12 @@ final class StitchModel {
         clearResult()
     }
 
+    // Searches that unfinished exports still need are kept.
     func clear() {
-        textSearches.values.forEach { $0.cancel() }
-        textSearches = [:]
+        let needed = clipsInUse
+        textSearches.values.filter { !needed.contains($0.url) }.forEach { $0.cancel() }
+        textSearches = textSearches.filter { needed.contains($0.key) }
+        sessionNumber += 1
         items = []
         thumbnails = [:]
         isManuallyOrdered = false
@@ -1001,6 +1033,9 @@ final class StitchModel {
             message += " Move Everything to Trash moves \(theClips) and the \(outputs.count) videos saved in this session."
         }
         message += (outputs.isEmpty ? "" : " Nothing else is touched.") + " You can put back anything moved to the Trash."
+        if clips.contains(where: { clipsInUse.contains($0.url) }) {
+            message += " Clips in videos that are still being saved stay where they are."
+        }
         var choices: [(label: String, action: ClearAction)] = [("Keep Files", .keepFiles), ("Move Clips to Trash", .moveClips)]
         if !outputs.isEmpty {
             choices.append(("Move Everything to Trash", .moveEverything))
@@ -1035,11 +1070,14 @@ final class StitchModel {
 
     // Only files the session knows about are moved: its clips and the videos combined from them.
     func clearSession(_ action: ClearAction) {
-        let files = switch action {
+        let all = switch action {
         case .keepFiles: [URL]()
         case .moveClips: clips.map(\.url)
         case .moveEverything: clips.map(\.url) + existingOutputs
         }
+        let inUse = clipsInUse
+        let files = all.filter { !inUse.contains($0) }
+        let kept = all.count - files.count
         var failed: [String] = []
         for file in files {
             do {
@@ -1052,6 +1090,9 @@ final class StitchModel {
         state = .idle
         let moved = files.count - failed.count
         notice = moved == 0 ? nil : moved == 1 ? "Moved 1 file to the Trash." : "Moved \(moved) files to the Trash."
+        if kept > 0 {
+            notice = (notice.map { $0 + " " } ?? "") + (kept == 1 ? "Kept 1 clip that's still being saved." : "Kept \(kept) clips that are still being saved.")
+        }
         if !failed.isEmpty {
             warning = "Couldn't move to the Trash: \(failed.joined(separator: ", "))"
         }
@@ -1105,79 +1146,114 @@ final class StitchModel {
         encode(to: output, compressing: compressing)
     }
 
+    // Adds an export of the session as it is now to the queue. The session can change straight away.
     func encode(to output: URL, compressing: Bool = true) {
-        guard tools != nil, !clips.isEmpty, !isEncoding else { return }
+        guard tools != nil, !clips.isEmpty else { return }
         if let missingClipsProblem {
             state = .failed(missingClipsProblem)
             return
         }
-        let texts = activeHiddenText
-        pendingRecord = texts.isEmpty ? nil : HiddenRecord(texts: texts, places: [])
-        progressBase = 0
-        // A clip replaced since it was searched is searched again, and one whose search failed gets another try. Either
-        // way its text has to be found and covered, which joining as is can't do.
+        guard !exports.contains(where: { $0.isActive && $0.output == output }) else {
+            state = .failed("“\(output.lastPathComponent)” is already being saved. Choose a different name, or wait until it's done.")
+            return
+        }
+        // A clip replaced since it was searched is searched again, and one whose search failed gets another try.
         for clip in clips {
             textSearches[clip.url]?.checkFile()
             textSearches[clip.url]?.forgetFailure()
         }
-        if !texts.isEmpty, compressing || !canCombineWithoutCompressing {
-            hideText(texts, thenEncodeTo: output)
-        } else {
-            startFFmpeg(to: output, compressing: compressing)
-        }
+        let texts = activeHiddenText
+        // Joining as is can't cover text, so it's only for clips where none was found.
+        let export = Export(output: output, items: items, size: outputSize, quality: quality, texts: texts,
+                            joins: !compressing && canCombineWithoutCompressing, session: sessionNumber)
+        exports.append(export)
+        state = .idle
+        let clipCount = export.clips.count == 1 ? "1 clip" : "\(export.clips.count) clips"
+        log("Queued “\(export.name)”: \(clipCount), \(formatDuration(export.duration))"
+            + (texts.isEmpty ? "" : ", redacting \(texts.count == 1 ? "1 text" : "\(texts.count) texts")"))
+        startNextExport()
     }
 
-    // Finishes looking for the hidden text, writes a covered copy of each clip it was found in, then encodes with the
-    // copies in place of those clips. Searching, covering and compressing share one progress bar.
-    private func hideText(_ texts: [String], thenEncodeTo output: URL) {
+    // One at a time, so each export has the whole Mac.
+    private func startNextExport() {
+        guard runningExport == nil, let next = exports.first(where: { $0.status == .waiting }) else { return }
+        next.status = .running
+        next.startedAt = Date()
+        next.activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Saving a video")
+        // Standardizing only strips /private from paths that exist, so do it on the folder.
+        seenFiles.insert(next.output.deletingLastPathComponent().standardizedFileURL.appendingPathComponent(next.output.lastPathComponent))
+        log("Started “\(next.name)”")
+        if !next.texts.isEmpty, !next.joins {
+            redact(next)
+        } else {
+            startFFmpeg(next)
+        }
+        updateSearches()
+    }
+
+    private func setStage(_ export: Export, _ stage: String) {
+        guard stage != export.stage else { return }
+        if let previous = export.stage {
+            log("“\(export.name)”: \(previous) took \(formatDuration(Date().timeIntervalSince(export.stageStartedAt)))")
+        }
+        export.stage = stage
+        export.stageStartedAt = Date()
+        log("“\(export.name)”: \(stage)")
+    }
+
+    // Finishes looking for the text, writes a covered copy of each clip it was found in, then hands the copies to
+    // FFmpeg in place of those clips. Searching, covering and compressing share one progress bar.
+    private func redact(_ export: Export) {
         let stop = CancelFlag()
-        coverStop = stop
-        cancelled = false
-        progress = 0
-        startedAt = Date()
-        state = .encoding
-        let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Redacting text")
-        let searchShare = clips.contains(where: needsSearch) ? 0.4 : 0
-        coverCopies = []
+        export.coverStop = stop
+        let texts = export.texts
+        let clips = export.clips
+        let searchShare = clips.contains { needsSearch($0, for: texts) } ? 0.4 : 0
         Task {
             var covered: [UUID: Clip] = [:]
             var redacting: String?
+            var failure: String?
             do {
-                encodeStep = "Looking for text to redact"
                 updateSearches()
                 let total = max(clips.reduce(0) { $0 + $1.duration }, 0.001)
-                while !cancelled, clips.contains(where: needsSearch) {
-                    let left = clips.filter(needsSearch).reduce(0) { $0 + $1.duration }
-                    let current = searchingClip.map { (textSearches[$0.url]?.progress ?? 0) * $0.duration } ?? 0
-                    progress = searchShare * min(max((total - left + current) / total, 0), 1)
+                while !export.cancelled, clips.contains(where: { needsSearch($0, for: texts) }) {
+                    let left = clips.filter { needsSearch($0, for: texts) }.reduce(0) { $0 + $1.duration }
+                    let searching = clips.first { textSearches[$0.url]?.isBusy == true }
+                    let current = searching.map { (textSearches[$0.url]?.progress ?? 0) * $0.duration } ?? 0
+                    export.progress = searchShare * min(max((total - left + current) / total, 0), 1)
+                    if let searching, let index = clips.firstIndex(of: searching) {
+                        setStage(export, clips.count == 1 ? "Looking through the clip" : "Looking through clip \(index + 1) of \(clips.count)")
+                    } else {
+                        setStage(export, "Waiting to look for text")
+                    }
                     try? await Task.sleep(for: .milliseconds(200))
                 }
-                if cancelled { throw CancellationError() }
-                if let failed = failedSearchClip, let failure = textSearches[failed.url]?.failure {
-                    throw ProbeError("Couldn't look for text in “\(failed.name)”. \(failure) Remove the clip from the list, or uncheck the text to redact, then combine again.")
+                if export.cancelled { throw CancellationError() }
+                if let failed = clips.first(where: { textSearches[$0.url]?.failure != nil }), let reason = textSearches[failed.url]?.failure {
+                    throw ProbeError("Couldn't look for text in “\(failed.name)”. \(reason) Remove the clip from the list, or uncheck the text to redact, then combine again.")
                 }
                 var tracks: [UUID: [TextTrack]] = [:]
                 for clip in clips {
-                    guard let found = hiddenTextTracks(for: clip) else {
+                    guard let found = hiddenTextTracks(for: clip, texts: texts) else {
                         throw ProbeError("Couldn't look for text in “\(clip.name)”. Combine again to look once more.")
                     }
                     if !found.isEmpty { tracks[clip.id] = found }
                 }
-                pendingRecord = hiddenRecord(texts: texts, tracks: tracks)
+                export.record = hiddenRecord(items: export.items, texts: texts, tracks: tracks)
 
-                encodeStep = "Redacting text"
                 let coverShare = tracks.isEmpty ? 0 : 0.2
                 let coverTotal = max(clips.filter { tracks[$0.id] != nil }.reduce(0) { $0 + $1.duration }, 0.001)
                 var done = 0.0
                 for clip in clips {
                     guard let found = tracks[clip.id] else { continue }
                     redacting = clip.name
+                    setStage(export, "Redacting text in “\(clip.name)”")
                     let copy = FileManager.default.temporaryDirectory.appendingPathComponent("screen-stitch-covered-\(UUID().uuidString).mov")
-                    coverCopies.append(copy)
+                    export.coverCopies.append(copy)
                     let before = done
                     try await TextCover.write(clip.url, covering: found, to: copy, progress: { value in
-                        Task { @MainActor in self.progress = searchShare + coverShare * (before + value * clip.duration) / coverTotal }
-                    }, stop: stop)
+                        Task { @MainActor in export.progress = searchShare + coverShare * (before + value * clip.duration) / coverTotal }
+                    }, stop: stop, pause: export.coverPause)
                     done += clip.duration
                     // Read back rather than assumed, since the copy only has the streams AVFoundation could carry over.
                     guard let tools, let copied = await Prober.probeAll([copy], ffprobe: tools.ffprobe).first?.1 else {
@@ -1186,38 +1262,46 @@ final class StitchModel {
                     covered[clip.id] = copied
                 }
                 // Cancel can land while the last copy is finishing.
-                if cancelled { throw CancellationError() }
-                progressBase = searchShare + coverShare
+                if export.cancelled { throw CancellationError() }
+                export.progressBase = searchShare + coverShare
             } catch {
-                coverCopies.forEach { try? FileManager.default.removeItem(at: $0) }
-                coverCopies = []
-                pendingRecord = nil
-                if cancelled || error is CancellationError {
-                    state = .idle
-                } else {
+                export.coverCopies.forEach { try? FileManager.default.removeItem(at: $0) }
+                export.coverCopies = []
+                export.record = nil
+                if !(export.cancelled || error is CancellationError) {
                     let place = redacting.map { " in “\($0)”" } ?? ""
-                    state = .failed((error as? ProbeError)?.errorDescription ?? "Couldn't redact the text\(place): \(error.localizedDescription)")
+                    failure = (error as? ProbeError)?.errorDescription ?? "Couldn't redact the text\(place): \(error.localizedDescription)"
                 }
             }
-            ProcessInfo.processInfo.endActivity(activity)
-            coverStop = nil
-            encodeStep = nil
-            if state == .encoding {
-                startFFmpeg(to: output, compressing: true, replacing: covered, temporaryFiles: coverCopies)
-                coverCopies = []
+            export.coverStop = nil
+            if let failure {
+                end(export, .failed(failure))
+            } else if export.cancelled {
+                end(export, .cancelled)
+            } else {
+                let copies = export.coverCopies
+                export.coverCopies = []
+                startFFmpeg(export, replacing: covered, temporaryFiles: copies)
             }
         }
     }
 
-    private func startFFmpeg(to output: URL, compressing: Bool, replacing covered: [UUID: Clip] = [:], temporaryFiles copies: [URL] = []) {
+    private func startFFmpeg(_ export: Export, replacing covered: [UUID: Clip] = [:], temporaryFiles copies: [URL] = []) {
         guard let tools else { return }
         let temporary = FileManager.default.temporaryDirectory
+        let clips = export.clips
         var job: EncodeJob
         do {
-            if compressing {
-                let (width, height, _) = EncodeJob.canvas(for: clips, size: outputSize)
+            if export.joins {
+                job = EncodeJob(clips: clips, size: export.size, quality: export.quality, output: export.output)
+                let list = temporary.appendingPathComponent("screen-stitch-\(UUID().uuidString).txt")
+                try job.concatList.write(to: list, atomically: true, encoding: .utf8)
+                job.mode = .join(list: list)
+                job.temporaryFiles = [list]
+            } else {
+                let (width, height, _) = EncodeJob.canvas(for: clips, size: export.size)
                 var images: [URL] = []
-                let segments: [EncodeJob.Segment] = try items.map { item in
+                let segments: [EncodeJob.Segment] = try export.items.map { item in
                     switch item {
                     case let .clip(clip):
                         return .clip(covered[clip.id] ?? clip)
@@ -1231,126 +1315,144 @@ final class StitchModel {
                         return .card(card, image: image)
                     }
                 }
-                job = EncodeJob(segments: segments, size: outputSize, quality: quality, output: output)
+                job = EncodeJob(segments: segments, size: export.size, quality: export.quality, output: export.output)
                 job.temporaryFiles = images + copies
-            } else {
-                guard canCombineWithoutCompressing else { return }
-                job = EncodeJob(clips: clips, size: outputSize, quality: quality, output: output)
-                let list = temporary.appendingPathComponent("screen-stitch-\(UUID().uuidString).txt")
-                try job.concatList.write(to: list, atomically: true, encoding: .utf8)
-                job.mode = .join(list: list)
-                job.temporaryFiles = [list]
             }
         } catch {
             copies.forEach { try? FileManager.default.removeItem(at: $0) }
-            state = .failed("Couldn't \(clips.count == 1 ? "compress the clip" : "combine the clips"): \(error.localizedDescription)")
+            end(export, .failed("Couldn't \(clips.count == 1 ? "compress the clip" : "combine the clips"): \(error.localizedDescription)"))
             return
         }
+        setStage(export, export.joins ? "Joining" : clips.count == 1 ? "Compressing" : "Combining and compressing")
         let run = FFmpegRun()
-        if progressBase == 0 {
-            startedAt = Date()
-        }
+        let base = export.progressBase
         do {
             try run.start(
                 ffmpeg: tools.ffmpeg,
                 arguments: job.arguments,
                 duration: job.duration,
-                onProgress: { value in Task { @MainActor in self.progress = self.progressBase + (1 - self.progressBase) * value } },
-                onExit: { status, errors in Task { @MainActor in self.finish(status: status, errors: errors) } }
+                onProgress: { value in Task { @MainActor in export.progress = base + (1 - base) * value } },
+                onExit: { status, errors in Task { @MainActor in self.finish(export, status: status, errors: errors) } }
             )
         } catch {
             job.temporaryFiles.forEach { try? FileManager.default.removeItem(at: $0) }
-            state = .failed("Couldn't start FFmpeg: \(error.localizedDescription)")
+            end(export, .failed("Couldn't start FFmpeg: \(error.localizedDescription)"))
             return
         }
-        self.run = run
-        self.job = job
-        // Standardizing only strips /private from paths that exist, so do it on the folder.
-        seenFiles.insert(output.deletingLastPathComponent().standardizedFileURL.appendingPathComponent(output.lastPathComponent))
-        cancelled = false
-        progress = progressBase
-        state = .encoding
-        activity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleSystemSleepDisabled],
-            reason: "Encoding video"
-        )
+        if recording.isCapturing {
+            run.setBackground(true)
+        }
+        export.run = run
+        export.job = job
+        export.progress = base
     }
 
     func cancel() {
-        guard isEncoding else { return }
-        cancelled = true
-        coverStop?.set()
-        run?.forceStop()
+        if let runningExport {
+            cancel(runningExport)
+        }
+    }
+
+    func cancel(_ export: Export) {
+        switch export.status {
+        case .waiting:
+            end(export, .cancelled)
+        case .running:
+            export.cancelled = true
+            export.coverStop?.set()
+            export.run?.forceStop()
+        default:
+            break
+        }
     }
 
     func abortForQuit() {
         textSearches.values.forEach { $0.cancel() }
-        coverStop?.set()
-        coverCopies.forEach { try? FileManager.default.removeItem(at: $0) }
-        guard isEncoding, let run, let job else { return }
-        run.forceStopAndWait()
-        removePartialOutput(of: job)
+        for export in exports where export.status == .running {
+            export.cancelled = true
+            export.coverStop?.set()
+            export.coverCopies.forEach { try? FileManager.default.removeItem(at: $0) }
+            if let run = export.run, let job = export.job {
+                run.forceStopAndWait()
+                removePartialOutput(of: export, job)
+            }
+        }
     }
 
     // A failed or cancelled run leaves a partial file, unless FFmpeg stopped before writing; then any file of that name
     // is one the user chose to replace, and it's kept.
-    private func removePartialOutput(of job: EncodeJob) {
+    private func removePartialOutput(of export: Export, _ job: EncodeJob) {
         job.temporaryFiles.forEach { try? FileManager.default.removeItem(at: $0) }
         let modified = try? job.output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        if let modified, modified >= startedAt.addingTimeInterval(-1) {
+        if let modified, modified >= (export.startedAt ?? .distantPast).addingTimeInterval(-1) {
             try? FileManager.default.removeItem(at: job.output)
         }
     }
 
-    private func finish(status: Int32, errors: String) {
-        guard let job else { return }
-        self.run = nil
-        self.job = nil
+    private func finish(_ export: Export, status: Int32, errors: String) {
+        guard let job = export.job else { return }
+        export.run = nil
+        export.job = nil
         job.temporaryFiles.forEach { try? FileManager.default.removeItem(at: $0) }
-        if let activity {
-            ProcessInfo.processInfo.endActivity(activity)
-            self.activity = nil
-        }
-
-        defer {
-            pendingRecord = nil
-            progressBase = 0
-        }
-        if cancelled {
-            removePartialOutput(of: job)
-            state = .idle
+        if export.cancelled {
+            removePartialOutput(of: export, job)
+            end(export, .cancelled)
         } else if status == 0 {
-            let bytes = (try? job.output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            progress = 1
-            let output = job.output.standardizedFileURL
-            // Saving over an earlier video makes it the newest again.
-            sessionOutputs.removeAll { $0 == output }
-            sessionOutputs.append(output)
-            hiddenRecords[output] = pendingRecord
-            checkedVideos.remove(output)
-            shownVideo = nil
-            state = .done(output: job.output, outputBytes: Int64(bytes), inputBytes: clips.reduce(0) { $0 + $1.fileSize })
-            NSApp?.requestUserAttention(.informationalRequest)
-            Task {
-                let image = await Self.thumbnail(of: job.output, duration: job.duration)
-                if case .done(job.output, _, _) = state {
-                    outputThumbnail = image
+            let bytes = Int64((try? job.output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            export.progress = 1
+            // An export from a session that has since been cleared isn't added to the new one.
+            if export.session == sessionNumber {
+                let output = job.output.standardizedFileURL
+                // Saving over an earlier video makes it the newest again.
+                sessionOutputs.removeAll { $0 == output }
+                sessionOutputs.append(output)
+                hiddenRecords[output] = export.record
+                checkedVideos.remove(output)
+                shownVideo = nil
+                state = .done(output: job.output, outputBytes: bytes, inputBytes: export.clips.reduce(0) { $0 + $1.fileSize })
+                Task {
+                    let image = await Self.thumbnail(of: job.output, duration: job.duration)
+                    if case .done(job.output, _, _) = state {
+                        outputThumbnail = image
+                    }
                 }
             }
+            NSApp?.requestUserAttention(.informationalRequest)
+            end(export, .done(outputBytes: bytes))
         } else {
-            removePartialOutput(of: job)
+            removePartialOutput(of: export, job)
             let action = job.clips.count == 1 ? "compress the clip" : "combine the clips"
-            state = .failed(errors.isEmpty
+            end(export, .failed(errors.isEmpty
                 ? "Couldn't \(action) (FFmpeg exited with status \(status))."
-                : "Couldn't \(action). FFmpeg reported:\n\(errors)")
+                : "Couldn't \(action). FFmpeg reported:\n\(errors)"))
         }
+    }
+
+    private func end(_ export: Export, _ status: Export.Status) {
+        let took = export.startedAt.map { " after \(formatDuration(Date().timeIntervalSince($0)))" } ?? ""
+        export.status = status
+        export.stage = nil
+        if let activity = export.activity {
+            ProcessInfo.processInfo.endActivity(activity)
+            export.activity = nil
+        }
+        switch status {
+        case .done: log("Saved “\(export.name)”\(took)")
+        case let .failed(message):
+            log("“\(export.name)” failed\(took): \(message)")
+            if export.session == sessionNumber {
+                state = .failed(message)
+            }
+        case .cancelled: log("Canceled “\(export.name)”\(took)")
+        default: break
+        }
+        startNextExport()
+        updateSearches()
     }
 
     // Any change to the list ends what the full card and a removal's Undo describe.
     private func clearResult() {
-        if !isEncoding {
-            state = .idle
-        }
+        state = .idle
         if removal != nil {
             notice = nil
         }

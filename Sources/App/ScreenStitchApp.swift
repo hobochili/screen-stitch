@@ -36,6 +36,12 @@ struct ScreenStitchApp: App {
             }
         }
 
+        Window("Export Log", id: "export-log") {
+            ExportLogView()
+                .environment(appDelegate.model)
+        }
+        .defaultSize(width: 640, height: 420)
+
         Settings {
             SettingsView()
                 .environment(appDelegate.model)
@@ -47,7 +53,7 @@ struct FileCommands: View {
     let model: StitchModel
 
     var body: some View {
-        let busy = model.isEncoding || model.recording.isRecording || model.tools == nil
+        let busy = model.recording.isRecording || model.tools == nil
         Button("Add Videos…") { model.chooseFiles() }
             .keyboardShortcut("o")
             .disabled(busy)
@@ -69,9 +75,8 @@ struct EditCommands: View {
         Divider()
         Button("Move to Trash") { model.trashItems(model.selection) }
             .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(model.isEncoding || model.recording.isRecording || !model.selectionHasClips)
+            .disabled(model.recording.isRecording || !model.selectionHasClips)
         Button("Redact Text…") { model.showsHideTextList = true }
-            .disabled(model.isEncoding)
     }
 }
 
@@ -79,7 +84,7 @@ struct RecordCommands: View {
     let model: StitchModel
 
     var body: some View {
-        let busy = model.isEncoding || model.tools == nil
+        let busy = model.tools == nil
         Button(model.recording.isCapturing ? "Stop Recording" : "Record Screen") { model.recording.toggleRecording() }
             .keyboardShortcut("r")
             .disabled(busy || (model.recording.isRecording && !model.recording.isCapturing))

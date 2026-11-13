@@ -1,7 +1,7 @@
 # How it works
 
 [Order](#order) · [Resolution and quality](#resolution-and-quality) · [Output](#output) ·
-[Saved session](#saved-session) · [Command line](#command-line)
+[Export queue](#export-queue) · [Saved session](#saved-session) · [Command line](#command-line)
 
 ## Order
 
@@ -62,6 +62,22 @@ afterwards. The original clips are never modified.
 **Combine Without Compressing…** copies each clip's video and audio as they are (H.264 or HEVC, with AAC) into an MP4,
 so none of this applies to it. With text to redact, it's offered only once the search shows the text isn't in any clip,
 since the boxes have to be drawn into the video.
+
+## Export queue
+
+**Combine & Compress…**, **Compress…** and **Combine Without Compressing…** each add an export to a queue. An export
+holds a snapshot of the list: the clips and title cards in order, the size and quality, and the checked text to redact.
+Later changes to the list don't affect it. Exports run one at a time, oldest first, so each has the whole Mac. An export
+that needs text searched also waits for that search, and searches for waiting exports run before the session's own.
+
+Clips a running or waiting export reads from can't be moved to the Trash, and **Clear Session** leaves them alone. A
+finished export is added to the session's saved videos only if the session hasn't been cleared since it started.
+
+While you record, searches and FFmpeg don't pause. They move into macOS's background priority band, which runs them at
+low priority, mostly on the efficiency cores and with their disk use throttled. They finish later but leave the
+recording what it needs, and they move back out when it stops.
+
+The Export Log keeps the last 3000 lines of what searches and exports did, in memory only. It's empty after a relaunch.
 
 ## Saved session
 

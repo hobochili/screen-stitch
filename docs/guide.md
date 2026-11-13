@@ -125,6 +125,9 @@ list, but their files stay where they are. The bottom bar says what was removed 
 the list. A clip recorded in this session goes straight away. A video you added from elsewhere asks first, since Screen
 Stitch didn't make it. **Remove from List** is the default choice there.
 
+A clip that a video still being saved uses can't be moved to the Trash. The bottom bar says so, and you can try again
+once the video is done.
+
 After that, **Put Back** in the bottom bar brings the files and their rows back. **Undo** and **Put Back** last until
 the message fades (about 8 seconds) or the list changes. After that, use **Put Back** in the Finder's Trash.
 
@@ -162,14 +165,14 @@ The switch at the top right of the sheet turns redaction on or off. Off keeps yo
 list turns grey. **Clear List…** at the bottom left removes every entry, after asking first.
 
 The search runs by itself in the background, one clip at a time. It takes about half a minute per minute of video, so
-about 10 minutes for 20 minutes, and short clips are quick. It pauses while you record and carries on afterwards, without
-starting over. Screen Stitch remembers the places it found for each text, so it doesn't search a clip again for text it
+about 10 minutes for 20 minutes, and short clips are quick. It keeps going while you record, but slower, so it doesn't get in
+the recording's way. Screen Stitch remembers the places it found for each text, so it doesn't search a clip again for text it
 has already searched. A new piece of text is searched for in every clip. A clip with text found shows a redaction icon in its row, and pointing at it says where, for example "Redacts
 “9611” in 3 places". The boxes go into the video you save, not into the clip's file, so **Preview** still shows the
 text.
 
 When you click **Combine & Compress…**, Screen Stitch waits for any search still running, then redacts the text and
-compresses. The bottom bar shows each step: "Looking for text to redact", then "Redacting text".
+compresses. The bottom bar shows each step, such as "Looking through clip 2 of 5", then "Redacting text in “clip.mov”".
 
 If a clip can't be searched, the list and the bottom bar say "Couldn't search “clip name”". Combining tries the search
 again first. If it still fails, combining stops and the message says to remove the clip or uncheck the text.
@@ -194,7 +197,20 @@ you add text after saving, the card is replaced by the compact **Saved** line, w
 Choose a **Resolution** and **Quality** in the bottom bar. The defaults suit most videos, and
 [How it works](how-it-works.md#resolution-and-quality) explains the options. Screen Stitch remembers both for next time.
 Then click **Combine & Compress…** and choose where to save the video. With only one clip, the button says
-**Compress…**. While it works, **Cancel** stops it and deletes the unfinished file.
+**Compress…**.
+
+Combining doesn't lock the window. Screen Stitch takes a snapshot of the list as it is now and saves the video in the
+background, so you can clear the session, record and combine again while it works. Videos are saved one at a time, in
+the order you started them. The bottom bar shows the one being saved, for example "Saving “Demo.mp4” · Compressing · 40%
+· about 2 minutes left · 1 more waiting". **Cancel** stops it and deletes the unfinished file.
+
+**Details** in the bottom bar opens the **Exports** list: every video since you opened Screen Stitch, with what it's
+doing, a button to cancel it, and **Show in Finder** once it's saved. **Clear Finished** empties the finished ones.
+**Show Log** opens the **Export Log**, which is also in the Window menu. It lists what searches and exports did, with
+the time of each step, which helps when something is slow or fails. **Copy All** copies it and **Clear** empties it.
+
+If you clear the session before a video is done, the video is still saved where you chose, but it isn't added to the new
+session. A video being saved also keeps its clips in place. See [Removing clips](#removing-clips).
 
 Before it starts, Screen Stitch checks that every clip's file is still there. If one was moved, renamed or deleted, the
 bottom bar names it. Remove it from the list, or add it again from where it is now.
@@ -234,6 +250,12 @@ saved-video card. Screen Stitch asks what to do with the files first:
 
 If the list is empty but you saved videos in this session, the choices are **Keep Files** and **Move Video to Trash**
 (**Move Videos to Trash** for several). Nothing else is touched, and you can put anything back from the Trash.
+
+Clips that a video still being saved uses stay where they are, whatever you choose, and the bottom bar says how many.
+That video keeps saving after the session is cleared.
+
+If you quit while a video is still being saved, Screen Stitch asks first. Quitting stops it and deletes the unfinished
+file, so you'd combine again.
 
 ## Troubleshooting
 

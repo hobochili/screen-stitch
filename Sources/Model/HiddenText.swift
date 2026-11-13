@@ -85,12 +85,9 @@ final class TextSearch {
         control.stop()
     }
 
-    func pause() {
-        control.pause()
-    }
-
-    func resume() {
-        control.resume()
+    // Moves its workers into the background band, or back out.
+    func setBackground(_ background: Bool) {
+        control.setBackground(background)
     }
 
     func forgetFailure() {
@@ -260,12 +257,12 @@ extension StitchModel {
         return search
     }
 
-    // Whether a clip still has checked text to look for. A clip that couldn't be read is tried again only when the list
-    // changes or the session is combined.
-    func needsSearch(_ clip: Clip) -> Bool {
+    // Whether a clip still has text to look for. A clip that couldn't be read is tried again only when the list changes
+    // or the session is combined.
+    func needsSearch(_ clip: Clip, for texts: [String]? = nil) -> Bool {
         let search = textSearches[clip.url]
         guard search?.failure == nil else { return false }
-        return activeHiddenText.contains { search?.found[$0] == nil }
+        return (texts ?? activeHiddenText).contains { search?.found[$0] == nil }
     }
 
     var failedSearchClip: Clip? {
@@ -276,39 +273,54 @@ extension StitchModel {
         clips.first { textSearches[$0.url]?.isBusy == true }
     }
 
-    // Searches one clip at a time, in list order. A search pauses while recording, since the workers would compete with
-    // capture.
+    // Searches one clip at a time: the unfinished exports' clips first, in the order they were started, then the
+    // session's. While recording, searches and FFmpeg carry on in the background band and redacting waits, so capture
+    // keeps the processors and video encoder it needs.
     func updateSearches() {
-        for (url, search) in textSearches where search.isBusy && !clips.contains(where: { $0.url == url }) {
+        var wanted: [(clip: Clip, texts: [String])] = []
+        for export in exports where export.isActive && !export.texts.isEmpty && !export.joins {
+            wanted += export.clips.map { ($0, export.texts) }
+        }
+        if !activeHiddenText.isEmpty {
+            wanted += clips.map { ($0, activeHiddenText) }
+        }
+        let urls = Set(wanted.map(\.clip.url))
+        for (url, search) in textSearches where search.isBusy && !urls.contains(url) {
             search.cancel()
         }
-        let texts = activeHiddenText
-        if texts.isEmpty {
-            textSearches.values.filter(\.isBusy).forEach { $0.cancel() }
-            return
-        }
-        if recording.isCapturing {
-            textSearches.values.filter(\.isBusy).forEach { $0.pause() }
-            return
-        }
-        textSearches.values.filter(\.isBusy).forEach { $0.resume() }
-        guard searchingClip == nil, let next = clips.first(where: needsSearch) else { return }
+        let background = recording.isCapturing
+        textSearches.values.forEach { $0.setBackground(background) }
+        runningExport?.run?.setBackground(background)
+        runningExport?.coverPause.set(background)
+        guard !textSearches.values.contains(where: \.isBusy),
+              let next = wanted.first(where: { needsSearch($0.clip, for: $0.texts) })?.clip else { return }
+        // Everything any list wants from the clip, so it isn't read again for another.
+        let texts = Array(Set(wanted.filter { $0.clip.url == next.url }.flatMap(\.texts))).sorted()
         let search = search(for: next.url)
         search.look(for: texts)
+        search.setBackground(background)
+        let started = Date()
+        log("Looking for text in “\(next.name)” (\(formatDuration(next.duration)) long)")
         Task {
             await search.finished()
+            let took = formatDuration(Date().timeIntervalSince(started))
             if let failure = search.failure {
                 warning = "Couldn't look for text in “\(next.name)”. \(failure)"
+                log("Couldn't look for text in “\(next.name)” after \(took): \(failure)")
+            } else {
+                let places = texts.reduce(0) { $0 + Self.places(of: search.found[$1] ?? [], duration: next.duration).count }
+                log("Looked through “\(next.name)” in \(took): \(places == 1 ? "1 place" : "\(places) places") found")
             }
             updateSearches()
         }
     }
 
     // Where a clip's checked text was found, once all of it has been looked for.
-    func hiddenTextTracks(for clip: Clip) -> [TextTrack]? {
-        guard let search = textSearches[clip.url] else { return activeHiddenText.isEmpty ? [] : nil }
+    func hiddenTextTracks(for clip: Clip, texts: [String]? = nil) -> [TextTrack]? {
+        let texts = texts ?? activeHiddenText
+        guard let search = textSearches[clip.url] else { return texts.isEmpty ? [] : nil }
         var tracks: [TextTrack] = []
-        for text in activeHiddenText {
+        for text in texts {
             guard let found = search.found[text] else { return nil }
             tracks += found
         }
@@ -362,12 +374,9 @@ extension StitchModel {
             : texts.formatted(.list(type: .and))
         var line = "Redacting \(names)"
         guard !clips.isEmpty else { return line }
-        if let clip = searchingClip ?? clips.first(where: needsSearch), let index = clips.firstIndex(of: clip) {
-            if recording.isCapturing {
-                return line + " · Search paused while recording"
-            }
+        if let clip = searchingClip ?? clips.first(where: { needsSearch($0) }), let index = clips.firstIndex(of: clip) {
             line += clips.count == 1 ? " · Looking through the clip…" : " · Looking through clip \(index + 1) of \(clips.count)…"
-            return line
+            return line + (recording.isCapturing ? " · Slower while recording" : "")
         }
         if let failed = failedSearchClip {
             return line + " · Couldn't search “\(failed.name)”"
@@ -427,7 +436,7 @@ extension StitchModel {
     }
 
     // Where each clip's tracks land in the combined video, given the clips and title cards before it.
-    func hiddenRecord(texts: [String], tracks: [UUID: [TextTrack]]) -> HiddenRecord {
+    func hiddenRecord(items: [SessionItem], texts: [String], tracks: [UUID: [TextTrack]]) -> HiddenRecord {
         var places: [HiddenPlace] = []
         var offset = 0.0
         var number = 0

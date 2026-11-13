@@ -20,6 +20,7 @@ struct BottomBar: View {
             default:
                 EmptyView()
             }
+            ExportsLine()
             StatusView()
             if model.showsSavedLine {
                 SavedVideosLine()
@@ -112,7 +113,7 @@ struct BottomBar: View {
                         controls
                     }
                 }
-                .disabled(model.isEncoding || model.recording.isRecording || model.tools == nil)
+                .disabled(model.recording.isRecording || model.tools == nil)
             }
         }
         .padding()
@@ -133,7 +134,6 @@ struct HidingTextLine: View {
                     .foregroundStyle(.secondary)
                 Button("Change…") { model.showsHideTextList = true }
                     .linkButton()
-                    .disabled(model.isEncoding)
             }
             .font(.caption)
         }
@@ -216,14 +216,6 @@ struct StatusView: View {
         switch model.state {
         case .idle:
             EmptyView()
-        case .encoding:
-            HStack(spacing: 12) {
-                ProgressView(value: model.progress)
-                Text(verbatim: model.progressText)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Button("Cancel") { model.cancel() }
-            }
         case let .done(output, outputBytes, inputBytes):
             HStack(spacing: 14) {
                 Button {

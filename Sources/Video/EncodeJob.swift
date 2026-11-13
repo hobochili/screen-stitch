@@ -218,6 +218,11 @@ final class FFmpegRun: @unchecked Sendable {
         }
     }
 
+    // Moves FFmpeg into the background band while a recording needs the processors, or back out.
+    func setBackground(_ on: Bool) {
+        SearchControl.setBackground(on, process)
+    }
+
     // SIGTERM would make ffmpeg finish the faststart rewrite of a file we're about to delete.
     func forceStop() {
         if process.isRunning {
