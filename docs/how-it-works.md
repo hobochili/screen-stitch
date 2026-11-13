@@ -50,15 +50,21 @@ bigger file.
 - A clip with several audio tracks has them mixed into one.
 
 Text to redact is found before FFmpeg starts. Screen Stitch splits each clip into 20-second chunks and hands them to up
-to 8 worker processes, the app run again with `--find-text`. Each worker reads a frame every half second and whenever
-the picture changes a lot, then re-reads the places it found more carefully until nothing new turns up. The places are
-kept per text in `~/Library/Caches/Screen Stitch/Redactions`, so a relaunch doesn't search again. The cache key includes
-a version number, and a clip is searched again if its file changes. Rotated video isn't searched, and combining stops
-with a message. Only clips where text was found are rewritten, using AVFoundation. A box stays up through frames where
-its text went unread, and starts half a second early, but only where the picture matches the text as it was read. The
-boxes are drawn into the decoded frames before they're re-encoded, so no original pixels remain under them. They can't
-be recovered from the saved video. The sound is copied as it is. FFmpeg then compresses those copies like any other
-clip, and Screen Stitch deletes them afterwards. The original clips are never modified.
+to 8 worker processes, the app run again with `--find-text`. Each worker reads a frame carefully every half second and
+whenever the picture changes a lot, and quickly in the frames between. Vision misses small text in a big frame, so a
+careful reading splits a frame more than 800 pixels across or high into overlapping tiles, each at most 800 pixels or
+half its longer side. Every reading reads again only the parts of the frame that changed since they were last read, and
+what it found counts as still there for as long as the pixels under it stay the same. Then the frames where text went
+missing are read again carefully, around where it was seen, until nothing new turns up. The places are kept per text in
+`~/Library/Caches/Screen Stitch/Redactions`, so a relaunch doesn't search again. The cache key includes a version
+number, and a clip is searched again if its file changes. Rotated video isn't searched, and combining stops with a
+message. Only clips where text was found are rewritten, using AVFoundation. A box stays up through frames where its text
+went unread, and starts half a second early, or up to 10 seconds early for text that sat still, but only where the
+picture matches the text as it was read. Text that jumps between two readings, as a page does when scrolled a notch,
+gets one box over both places until the second. The boxes are drawn into the decoded frames before they're re-encoded,
+so no original pixels remain under them. They can't be recovered from the saved video. The sound is copied as it is.
+FFmpeg then compresses those copies like any other clip, and Screen Stitch deletes them afterwards. The original clips
+are never modified.
 
 **Combine Without Compressing…** copies each clip's video and audio as they are (H.264 or HEVC, with AAC) into an MP4,
 so none of this applies to it. With text to redact, it's offered only once the search shows the text isn't in any clip,

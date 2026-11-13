@@ -103,7 +103,7 @@ enum TextCover {
                 let time = CMSampleBufferGetPresentationTimeStamp(sample)
                 do {
                     guard let buffer = CMSampleBufferGetImageBuffer(sample) else { throw CocoaError(.fileReadCorruptFile) }
-                    try ahead.read(through: time.seconds + TextTrack.lead)
+                    try ahead.read(through: time.seconds + TextTrack.backfill)
                     try cover(buffer, at: time.seconds, tracks: tracks, looks: &looks, firstLooks: ahead.looks)
                     if adaptor.append(buffer, withPresentationTime: time) {
                         let done = duration > 0 ? min(time.seconds / duration, 1) : 0
@@ -171,7 +171,9 @@ enum TextCover {
     // the first for a box drawn early), so boxes don't linger after text scrolls away or show up before it arrives.
     private static func cover(_ buffer: CVPixelBuffer, at time: Double, tracks: [TextTrack], looks: inout [Int: TextLook],
                               firstLooks: [Int: TextLook]) throws {
-        let boxes = tracks.indices.compactMap { index in tracks[index].box(at: time).map { (index, $0) } }
+        let boxes = tracks.indices.compactMap { index in
+            tracks[index].box(at: time).map { (index, $0, false) } ?? tracks[index].earlyBox(at: time).map { (index, $0, true) }
+        }
         guard !boxes.isEmpty else { return }
         guard CVPixelBufferLockBaseAddress(buffer, []) == kCVReturnSuccess else { throw CocoaError(.fileWriteUnknown) }
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
@@ -184,11 +186,17 @@ enum TextCover {
         let frame = TextLook.Frame(base: base, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), width: width, height: height)
         // Every box is checked against the picture before any is drawn, since boxes can overlap.
         var drawn: [CGRect] = []
-        for (index, box) in boxes {
+        for (index, box, early) in boxes {
             let track = tracks[index]
             let rect = rect(for: box, characters: track.text.count, width: Double(width), height: Double(height))
-            if track.isSighted(at: time) {
+            if early {
+                guard let look = firstLooks[index], look.matches(frame, rect) else { continue }
+            } else if track.isSighted(at: time) {
                 looks[index] = TextLook(frame, rect)
+            } else if let span = track.span(at: time) {
+                // Text that jumped between two readings gets one box over both places.
+                drawn.append(Self.rect(for: span, characters: track.text.count, width: Double(width), height: Double(height)))
+                continue
             } else if let look = time > track.sightings[0].time ? looks[index] : firstLooks[index], !look.matches(frame, rect) {
                 continue
             }

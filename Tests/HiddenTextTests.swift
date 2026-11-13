@@ -46,6 +46,17 @@ import Vision
         #expect(steady.box(at: 0.6)!.minY < 0.31)
     }
 
+    // From JC Penney at 353.93 s: a form jumped 62 pixels up between readings a tenth of a second apart, so a box
+    // halfway between them would have left the text bare.
+    @Test func textThatJumpsBetweenReadingsIsSpannedAcrossBothPlaces() {
+        let before = CGRect(x: 0.247, y: 0.902, width: 0.026, height: 0.01), after = before.offsetBy(dx: 0, dy: -62 / 1080.0)
+        let track = TextTrack(text: "55407", sightings: [.init(time: 353.80, box: before), .init(time: 353.88, box: before),
+                                                         .init(time: 353.98, box: after)])
+        #expect(track.span(at: 353.93) == before.union(after))
+        #expect(track.span(at: 353.84) == nil)
+        #expect(track.span(at: 354.0) == nil)
+    }
+
     @Test func boxesFollowTheTextBetweenSightings() {
         let scrolling = track([(1, 0.8), (2, 0.6)])
         #expect(abs(scrolling.box(at: 1.5)!.minY - 0.7) < 0.0001)
@@ -153,6 +164,14 @@ import Vision
         #expect(tracks[0].box(at: 2.5)?.minY == 0.5)
     }
 
+    // A word cut short by the edge of one tile and read whole in the next is one place, boxed around both readings.
+    @Test func aPlaceReadInTwoTilesGetsOneBoxAroundBoth() {
+        let whole = TextTracker.Found(text: "4242", box: CGRect(x: 0.5, y: 0.5, width: 0.04, height: 0.02))
+        let cut = TextTracker.Found(text: "4242", box: CGRect(x: 0.49, y: 0.5, width: 0.035, height: 0.02))
+        let elsewhere = TextTracker.Found(text: "4242", box: CGRect(x: 0.1, y: 0.1, width: 0.04, height: 0.02))
+        #expect(TextTracker.joined([whole], [cut, elsewhere]) == [.init(text: "4242", box: whole.box.union(cut.box)), elsewhere])
+    }
+
     @Test func readingsAreMergedWithoutCountingAPlaceTwice() {
         let a = TextTracker.Found(text: "4242", box: CGRect(x: 0.1, y: 0.1, width: 0.1, height: 0.05))
         let nearlyA = TextTracker.Found(text: "4242", box: CGRect(x: 0.101, y: 0.1, width: 0.1, height: 0.05))
@@ -184,6 +203,15 @@ import Vision
         let recheck = TextTracker.timesToRecheck(tracks, in: all)
         #expect([1.0, 2.0, 3.5].allSatisfy { recheck.contains($0) })
         #expect(![6.5, 7.5, 8.5].contains { recheck.contains($0) })
+    }
+
+    // Re-reading looks around where the tracks near each time were seen, not at the whole frame.
+    @Test func reReadingLooksAroundTheTracks() throws {
+        let tracks = TextTracker.tracks(for: "4242", in: frames([(0, [0.5]), (0.1, []), (0.2, [0.5]), (9, [])]))
+        let areas = TextTracker.areasToRecheck(tracks, at: [0.1])
+        let area = try #require(areas[0.1])
+        #expect(area.contains(CGRect(x: 0.1, y: 0.5, width: 0.1, height: 0.05)))
+        #expect(abs(area.minX - 0) < 0.0001 && abs(area.maxX - 0.3) < 0.0001 && abs(area.minY - 0.4) < 0.0001)
     }
 
     @Test func matchesIgnoreCaseAndCatchReadingsOneCharacterOff() {
@@ -316,6 +344,37 @@ import Vision
         #expect(try brightness(of: covered, frame: 20, in: right) > 200)
         #expect(try brightness(of: covered, frame: 12, in: bottom) > 200)
         #expect(try brightness(of: covered, frame: 37, in: right) < 20)
+    }
+
+    // Text that jumps between two readings, as a page does when scrolled a notch, is covered wherever it is in between.
+    @Test func textThatJumpsBetweenReadingsIsCoveredAtBothPlaces() async throws {
+        let folder = try TemporaryFolder()
+        let video = folder.file("jump.mov")
+        try await makeTextVideo(video, frames: 20) { frame in [("Card 4242", NSPoint(x: 100, y: frame < 10 ? 300 : 200))] }
+        let before = CGRect(x: 100, y: 386, width: 140, height: 34), after = before.offsetBy(dx: 0, dy: 100)
+        func sightings(_ rect: CGRect, _ frames: [Int]) -> [TextTrack.Sighting] {
+            frames.map { .init(time: Double($0) / 20, box: CGRect(x: rect.minX / 1280, y: rect.minY / 720, width: rect.width / 1280,
+                                                                  height: rect.height / 720)) }
+        }
+        let track = TextTrack(text: "4242", sightings: sightings(before, [0, 4, 8]) + sightings(after, [12, 16]))
+        let covered = folder.file("covered.mov")
+        try await TextCover.write(video, covering: [track], to: covered)
+        #expect(try brightness(of: covered, frame: 9, in: before) < 20)
+        #expect(try brightness(of: covered, frame: 11, in: after) < 20)
+    }
+
+    // Text first read late, after sitting unread, is covered from when it appeared, but not before.
+    @Test func textReadLateIsCoveredFromWhenItAppeared() async throws {
+        let folder = try TemporaryFolder()
+        let video = folder.file("late.mov")
+        try await makeTextVideo(video, frames: 60) { frame in [(frame < 10 ? "Other words" : "Card 4242", NSPoint(x: 100, y: 300))] }
+        let place = CGRect(x: 100, y: 386, width: 140, height: 34)
+        let box = CGRect(x: place.minX / 1280, y: place.minY / 720, width: place.width / 1280, height: place.height / 720)
+        let track = TextTrack(text: "4242", sightings: (50..<60).map { .init(time: Double($0) / 20, box: box) })
+        let covered = folder.file("covered.mov")
+        try await TextCover.write(video, covering: [track], to: covered)
+        #expect(try brightness(of: covered, frame: 15, in: place) < 20)
+        #expect(try brightness(of: covered, frame: 5, in: place) > 200)
     }
 
     // Waits for the background search to look through every clip.
@@ -646,6 +705,115 @@ private func readText(_ url: URL) throws -> [String] {
         lines += (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
     }
     return lines
+}
+
+@Suite struct TileTests {
+    // A white 1600×1000 frame with 20-point black text at points from the bottom left, and grey rectangles over it.
+    private func frame(_ lines: [(String, NSPoint)], grey: [NSRect] = []) -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(nil, 1600, 1000, kCVPixelFormatType_32BGRA, nil, &buffer)
+        let pixels = buffer!
+        CVPixelBufferLockBaseAddress(pixels, [])
+        let context = CGContext(data: CVPixelBufferGetBaseAddress(pixels), width: 1600, height: 1000, bitsPerComponent: 8,
+                                bytesPerRow: CVPixelBufferGetBytesPerRow(pixels), space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 1600, height: 1000).fill()
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 20), .foregroundColor: NSColor.black]
+        for (text, point) in lines {
+            NSAttributedString(string: text, attributes: attributes).draw(at: point)
+        }
+        NSColor.gray.setFill()
+        grey.forEach { $0.fill() }
+        NSGraphicsContext.restoreGraphicsState()
+        CVPixelBufferUnlockBaseAddress(pixels, [])
+        return pixels
+    }
+
+    @Test func bigFramesAreReadInOverlappingTiles() {
+        let tiles = TextFinder.tiles(width: 1622, height: 1080)
+        #expect(tiles.count == 6)
+        #expect(tiles.allSatisfy { Int($0.minX) % 4 == 0 && $0.width <= 815 && $0.height <= 648 && $0.maxX <= 1622 && $0.maxY <= 1080 })
+        // Anything a quarter of the frame across and a fifth of it high is whole in at least one tile.
+        let spots = stride(from: 0, through: 1622 - 405, by: 9).flatMap { x in
+            stride(from: 0, through: 1080 - 216, by: 9).map { y in CGRect(x: x, y: y, width: 405, height: 216) }
+        }
+        #expect(spots.allSatisfy { spot in tiles.contains { $0.contains(spot) } })
+        #expect(TextFinder.tiles(width: 3456, height: 2234).allSatisfy { $0.width <= 1731 && $0.height <= 1728 })
+        #expect(TextFinder.tiles(width: 756, height: 596) == [CGRect(x: 0, y: 0, width: 756, height: 596)])
+        #expect(TextFinder.tiles(width: 1222, height: 708).map(\.width) == [734, 734])
+    }
+
+    // Text read in a tile is placed where it is in the whole frame, once, though two tiles hold it.
+    @Test func readingsInTilesArePlacedInTheWholeFrame() throws {
+        let tiles = TextFinder.tiles(width: 1600, height: 1000)
+        for point in [NSPoint(x: 1200, y: 150), NSPoint(x: 700, y: 480)] {
+            let buffer = frame([("Card 4242", point)])
+            let whole = try TextFinder.recognize(["4242"], in: buffer, level: .accurate)
+            let tiled = try TextFinder.recognize(["4242"], in: buffer, level: .accurate, tiles: tiles)
+            #expect(whole.count == 1)
+            #expect(tiled.count == 1)
+            #expect(abs(tiled[0].box.midX - whole[0].box.midX) * 1600 < 3 && abs(tiled[0].box.midY - whole[0].box.midY) * 1000 < 3)
+        }
+    }
+
+    // Readings carry on while their text looks the same, and only the part of the frame that changed is read again.
+    @Test func onlyWhatChangedIsReadAgain() throws {
+        let tiles = TextFinder.tiles(width: 1600, height: 1000)
+        var reader = ChangeReader(level: .accurate, tiles: tiles)
+        let card = ("Card 4242", NSPoint(x: 100, y: 850))
+        let first = try reader.read(["4242"], in: frame([card]))
+        #expect(first.count == 1)
+        #expect(reader.lastRead == tiles)
+        // A small change is read as a small crop around it.
+        let corner = frame([card], grey: [NSRect(x: 1500, y: 40, width: 60, height: 60)])
+        #expect(reader.still(in: corner) == first)
+        #expect(try reader.read(["4242"], in: corner) == first)
+        #expect(reader.lastRead.count == 1)
+        #expect(reader.lastRead[0].contains(CGRect(x: 1500, y: 900, width: 60, height: 60)))
+        #expect(reader.lastRead[0].width * reader.lastRead[0].height < 1600 * 1000 / 10)
+        #expect(try reader.read(["4242"], in: corner) == first)
+        #expect(reader.lastRead.isEmpty)
+        let hidden = frame([card], grey: [NSRect(x: 90, y: 840, width: 300, height: 50)])
+        #expect(reader.still(in: hidden).isEmpty)
+        #expect(try reader.read(["4242"], in: hidden).isEmpty)
+        // A change bigger than a tile is read in the tiles it touches, and a small one beside it as a crop.
+        let big = frame([card], grey: [NSRect(x: 0, y: 0, width: 1600, height: 300)])
+        #expect(try reader.read(["4242"], in: big) == first)
+        #expect(reader.lastRead.count == 4)
+        #expect(Set(reader.lastRead.prefix(3)) == Set(tiles.filter { $0.maxY > 700 }))
+    }
+
+    @Test func readingWithinAnAreaReadsOnlyThere() throws {
+        var reader = ChangeReader(level: .accurate, tiles: TextFinder.tiles(width: 1600, height: 1000))
+        let found = try reader.read(["4242"], in: frame([("Card 4242", NSPoint(x: 100, y: 850)), ("Card 4242", NSPoint(x: 1200, y: 100))]),
+                                    within: CGRect(x: 0, y: 0, width: 0.25, height: 0.25))
+        #expect(found.count == 1)
+        #expect(reader.lastRead.allSatisfy { CGRect(x: 0, y: 0, width: 401, height: 251).contains($0) })
+    }
+
+    // Text that turns up next to a change is read whole, though only part of the frame is read.
+    @Test func newTextIsReadInTheCropAroundIt() throws {
+        var reader = ChangeReader(level: .accurate, tiles: TextFinder.tiles(width: 1600, height: 1000))
+        #expect(try reader.read(["4242"], in: frame([("Order total", NSPoint(x: 100, y: 850))])).isEmpty)
+        let found = try reader.read(["4242"], in: frame([("Order total", NSPoint(x: 100, y: 850)), ("Card 4242", NSPoint(x: 900, y: 500))]))
+        #expect(found.count == 1)
+        #expect(reader.lastRead.count == 1)
+    }
+
+    @Test func compressionNoiseIsntAChange() {
+        var pixels = [UInt8](repeating: 200, count: 40 * 20 * 4)
+        pixels.withUnsafeMutableBytes { bytes in
+            let frame = TextLook.Frame(base: bytes.baseAddress!, bytesPerRow: 40 * 4, width: 40, height: 20)
+            let patch = Patch(frame, CGRect(x: 10, y: 5, width: 20, height: 10))
+            bytes[(8 * 40 + 15) * 4 + 1] = 220
+            #expect(!patch.changed(in: frame))
+            bytes[(8 * 40 + 15) * 4 + 1] = 255
+            #expect(patch.changed(in: frame))
+        }
+    }
 }
 
 @Suite struct FrameLookTests {

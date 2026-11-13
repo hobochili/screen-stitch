@@ -38,7 +38,7 @@ final class TextSearch {
         .appendingPathComponent("Screen Stitch/Redactions", isDirectory: true)
     // Part of the cache's key. It goes up whenever finding or tracking changes, so places found by an older version, which
     // may have missed text, aren't reused.
-    static let cacheVersion = 4
+    static let cacheVersion = 5
 
     let url: URL
     private let cacheFolder: URL?

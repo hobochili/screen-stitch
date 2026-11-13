@@ -24,6 +24,9 @@ struct TextTrack: Hashable, Sendable, Codable {
 
     // The shortest lead into a place the text jumped to, enough to cover it fading in.
     static let jumpLead = 0.15
+    // Text can sit unread for a few seconds before its first reading, when Vision misreads it, so a box reaches back
+    // this far wherever the picture matches that reading.
+    static let backfill = 10.0
 
     var start: Double { sightings[0].time - (leadIn ?? Self.lead) }
     var end: Double { sightings[sightings.count - 1].time + (leadOut ?? Self.lead) }
@@ -42,6 +45,22 @@ struct TextTrack: Hashable, Sendable, Codable {
         let f = (time - a.time) / (b.time - a.time)
         return CGRect(x: a.box.minX + (b.box.minX - a.box.minX) * f, y: a.box.minY + (b.box.minY - a.box.minY) * f,
                       width: a.box.width + (b.box.width - a.box.width) * f, height: a.box.height + (b.box.height - a.box.height) * f)
+    }
+
+    // The first reading's box, before the box starts and within `backfill`. Nil for text that jumped from elsewhere.
+    func earlyBox(at time: Double) -> CGRect? {
+        guard leadIn == nil, time < start, time >= sightings[0].time - Self.backfill else { return nil }
+        return sightings[0].box
+    }
+
+    // A box around the readings either side of `time` when the text moved more than half its size between them, since
+    // it may have jumped at any frame in between, as a page does when you scroll it a notch. Nil when it moved less.
+    func span(at time: Double) -> CGRect? {
+        guard time > sightings[0].time, time < sightings[sightings.count - 1].time else { return nil }
+        let after = sightings.partitionIndex { $0.time > time }
+        let a = sightings[after - 1].box, b = sightings[after].box
+        guard abs(b.midX - a.midX) > min(a.width, b.width) / 2 || abs(b.midY - a.midY) > min(a.height, b.height) / 2 else { return nil }
+        return a.union(b)
     }
 
     // Quick and careful readings box the same text at slightly different spots and sizes, so boxes would flicker. Each
@@ -275,9 +294,41 @@ enum TextTracker {
         return times
     }
 
+    // Where to read again at each time: around where the tracks near it were seen within a second, padded by a tenth of
+    // the frame, since the re-reading is for their text.
+    static func areasToRecheck(_ tracks: [TextTrack], at times: Set<Double>) -> [Double: CGRect] {
+        var areas: [Double: CGRect] = [:]
+        for time in times {
+            var area = CGRect.null
+            for track in tracks where time >= track.start - recheckGap && time <= track.end + recheckGap {
+                let near = track.sightings.filter { abs($0.time - time) <= 1 }.map(\.box)
+                let nearest = track.sightings.min { abs($0.time - time) < abs($1.time - time) }!.box
+                area = (near.isEmpty ? [nearest] : near).reduce(area) { $0.union($1) }
+            }
+            if !area.isNull {
+                areas[time] = area.insetBy(dx: -0.1, dy: -0.1).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+        }
+        return areas
+    }
+
     // Everything in both readings, without counting a place twice.
     static func merge(_ a: [Found], _ b: [Found]) -> [Found] {
         a + b.filter { found in !a.contains { $0.text == found.text && overlaps($0.box, found.box) } }
+    }
+
+    // Everything in both readings. A place both read gets one box around the two, as when a tile's edge cut off part
+    // of a word.
+    static func joined(_ a: [Found], _ b: [Found]) -> [Found] {
+        var result = a
+        for found in b {
+            if let index = result.firstIndex(where: { $0.text == found.text && overlaps($0.box, found.box) }) {
+                result[index].box = result[index].box.union(found.box)
+            } else {
+                result.append(found)
+            }
+        }
+        return result
     }
 
     // Carries the box along at the speed the text was moving, held still when that isn't known.
@@ -399,6 +450,7 @@ enum TextFinder {
         let transform = try await track.load(.preferredTransform)
         guard transform.a == 1, transform.d == 1, transform.b == 0, transform.c == 0 else { throw TextFinderError.rotated }
         let duration = try await asset.load(.duration).seconds
+        let whole = CGRect(x: 0, y: 0, width: 1, height: 1)
         // The first pass is most of the work. The careful re-reading only reads the frames it has to.
         let reporter = ProgressReporter { progress(0.8 * $0) }
         let rereadReporter = ProgressReporter { progress(0.8 + 0.2 * $0) }
@@ -432,12 +484,13 @@ enum TextFinder {
             let tracks = texts.flatMap { TextTracker.tracks(for: $0, in: frames) }
             let recheck = TextTracker.timesToRecheck(tracks, in: frames).subtracting(readCarefully)
             guard !recheck.isEmpty else { break }
+            let areas = TextTracker.areasToRecheck(tracks, at: recheck)
             let done = Counter()
             let reread = try await withThrowingTaskGroup(of: [TextTracker.Frame].self) { group in
                 for times in split(recheck, into: workerCount) {
                     group.addTask {
                         try await read(url, from: times[0], to: times[times.count - 1] + 0.001, pass: .careful, texts: texts,
-                                       only: Set(times), control: control) { _ in
+                                       only: Dictionary(uniqueKeysWithValues: times.map { ($0, areas[$0] ?? whole) }), control: control) { _ in
                             // Most rounds stop after the first, so it gets most of the bar, and the bar never stands still.
                             let shares = [0.8, 0.15, 0.05]
                             let fraction = shares[..<round].reduce(0, +) + shares[round] * Double(done.increment()) / Double(recheck.count)
@@ -478,7 +531,7 @@ enum TextFinder {
     // A worker that fails is run once more, since something outside the app can end one, and its stretch reads the same
     // either way.
     private static func read(_ url: URL, from start: Double, to end: Double, pass: Pass, texts: [String],
-                             only: Set<Double>? = nil, control: SearchControl,
+                             only: [Double: CGRect]? = nil, control: SearchControl,
                              onFrame: @escaping @Sendable (Double) -> Void) async throws -> [TextTracker.Frame] {
         do {
             return try await readOnce(url, from: start, to: end, pass: pass, texts: texts, only: only, control: control, onFrame: onFrame)
@@ -489,13 +542,14 @@ enum TextFinder {
     }
 
     private static func readOnce(_ url: URL, from start: Double, to end: Double, pass: Pass, texts: [String],
-                                 only: Set<Double>?, control: SearchControl,
+                                 only: [Double: CGRect]?, control: SearchControl,
                                  onFrame: @escaping @Sendable (Double) -> Void) async throws -> [TextTracker.Frame] {
         var arguments = ["--find-text", url.path, pass.rawValue, "\(start)", "\(end)"]
         var timesFile: URL?
         if let only {
             let file = FileManager.default.temporaryDirectory.appendingPathComponent("screen-stitch-times-\(UUID().uuidString).txt")
-            try only.map { "\($0)" }.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+            try only.map { time, area in "\(time) \(area.minX) \(area.minY) \(area.width) \(area.height)" }.joined(separator: "\n")
+                .write(to: file, atomically: true, encoding: .utf8)
             timesFile = file
             arguments += ["--times", file.path]
         }
@@ -540,7 +594,8 @@ enum TextFinder {
         return frames
     }
 
-    // A worker: reads its stretch of the video and prints each frame's findings as a line of JSON.
+    // A worker: reads its stretch of the video and prints each frame's findings as a line of JSON. Each line of the
+    // times file is a frame's time and the part to read, as fractions of the frame: x, y, width and height.
     // --find-text <video> <careful|sampled> <start> <end> [--times <file>] -- <text>...
     static func runAsWorker(_ arguments: [String]) -> Never {
         guard arguments.count >= 5, let pass = Pass(rawValue: arguments[1]), let start = Double(arguments[2]),
@@ -548,10 +603,15 @@ enum TextFinder {
             FileHandle.standardError.write(Data("usage: --find-text <video> <careful|sampled> <start> <end> [--times <file>] -- <text>...\n".utf8))
             exit(2)
         }
-        var only: Set<Double>?
+        var only: [Double: CGRect]?
         if let flag = arguments[..<separator].firstIndex(of: "--times"), flag + 1 < separator,
            let list = try? String(contentsOfFile: arguments[flag + 1], encoding: .utf8) {
-            only = Set(list.split(separator: "\n").compactMap { Double($0) })
+            only = [:]
+            for line in list.split(separator: "\n") {
+                let numbers = line.split(separator: " ").compactMap { Double($0) }
+                guard numbers.count == 5 else { continue }
+                only?[numbers[0]] = CGRect(x: numbers[1], y: numbers[2], width: numbers[3], height: numbers[4])
+            }
         }
         let texts = Array(arguments[(separator + 1)...])
         let encoder = JSONEncoder()
@@ -568,16 +628,16 @@ enum TextFinder {
         }
     }
 
-    // Reads the frames from `start` up to `end`, or with `only`, just the stretches around those frames, so a worker
-    // re-reading a few frames scattered through the video doesn't decode everything between them.
+    // Reads the frames from `start` up to `end`, or with `only`, just the stretches around those frames and the part of
+    // each it gives, so a worker re-reading a few frames scattered through the video doesn't decode everything between.
     private static func readFrames(_ url: URL, from start: Double, to end: Double, pass: Pass, texts: [String],
-                                   only: Set<Double>?, onFrame: (TextTracker.Frame) -> Void) throws {
+                                   only: [Double: CGRect]?, onFrame: (TextTracker.Frame) -> Void) throws {
         let asset = AVURLAsset(url: url)
         guard let track = try loadVideoTrack(asset) else { throw TextFinderError.noVideo }
         var stretches = [(start, end)]
         if let only {
             stretches = []
-            for time in only.sorted() where time >= start && time < end {
+            for time in only.keys.sorted() where time >= start && time < end {
                 if let last = stretches.last, time - last.1 < 1 {
                     stretches[stretches.count - 1].1 = time + 0.001
                 } else {
@@ -585,13 +645,17 @@ enum TextFinder {
                 }
             }
         }
+        // The stretches share these, since how the frame looked at a reading tells which parts need reading again.
+        var readers: (careful: ChangeReader, quick: ChangeReader)?
         for (start, end) in stretches {
-            try readStretch(asset, track: track, from: start, to: end, pass: pass, texts: texts, only: only, onFrame: onFrame)
+            try readStretch(asset, track: track, from: start, to: end, pass: pass, texts: texts, only: only, readers: &readers,
+                            onFrame: onFrame)
         }
     }
 
     private static func readStretch(_ asset: AVURLAsset, track: AVAssetTrack, from start: Double, to end: Double, pass: Pass,
-                                    texts: [String], only: Set<Double>?, onFrame: (TextTracker.Frame) -> Void) throws {
+                                    texts: [String], only: [Double: CGRect]?, readers: inout (careful: ChangeReader, quick: ChangeReader)?,
+                                    onFrame: (TextTracker.Frame) -> Void) throws {
         let reader = try AVAssetReader(asset: asset)
         // A little wider than the stretch, since times are rounded to the timescale. The checks below keep to it exactly.
         reader.timeRange = CMTimeRange(start: CMTime(seconds: max(start - 0.01, 0), preferredTimescale: 600),
@@ -606,7 +670,6 @@ enum TextFinder {
         var lastCarefulLook = FrameLook()
         var lastCarefulFound: [TextTracker.Found] = []
         var lastQuickLook = FrameLook()
-        var lastQuickFound: [TextTracker.Found] = []
         // A worker has no run loop to empty the autorelease pool, so each frame gets its own, or Vision's and the
         // decoder's leftovers pile up until the stretch ends.
         while let sample = output.copyNextSampleBuffer() {
@@ -614,14 +677,18 @@ enum TextFinder {
                 let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
                 // A frame showing when a stretch starts belongs to the stretch before.
                 guard time >= start, time < end, let buffer = CMSampleBufferGetImageBuffer(sample) else { return }
-                if let only, !only.contains(time) { return }
+                if let only, only[time] == nil { return }
                 // A picture that hasn't visibly changed since a reading reads the same, so that reading is reused. Each frame
                 // is compared with the frame that was read, not the one before, so a slow fade can't creep past.
                 let look = FrameLook(buffer)
+                if readers == nil {
+                    let tiles = Self.tiles(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+                    readers = (ChangeReader(level: .accurate, tiles: tiles), ChangeReader(level: .fast, tiles: tiles))
+                }
                 guard pass == .sampled else {
                     if !look.looksLike(lastCarefulLook) {
                         lastCarefulLook = look
-                        lastCarefulFound = try recognize(texts, in: buffer, level: .accurate)
+                        lastCarefulFound = try readers!.careful.read(texts, in: buffer, within: only?[time])
                     }
                     onFrame(TextTracker.Frame(time: time, found: lastCarefulFound, careful: true))
                     return
@@ -631,14 +698,18 @@ enum TextFinder {
                 } else if time - lastCareful >= carefulInterval || (time - lastCareful >= changeInterval && look.differsMuch(from: lastCarefulLook)) {
                     lastCareful = time
                     lastCarefulLook = look
-                    lastCarefulFound = try recognize(texts, in: buffer, level: .accurate)
+                    lastCarefulFound = try readers!.careful.read(texts, in: buffer)
                     onFrame(TextTracker.Frame(time: time, found: lastCarefulFound, careful: true))
-                } else if look.looksLike(lastQuickLook) {
-                    onFrame(TextTracker.Frame(time: time, found: lastQuickFound))
                 } else {
-                    lastQuickLook = look
-                    lastQuickFound = try recognize(texts, in: buffer, level: .fast)
-                    onFrame(TextTracker.Frame(time: time, found: lastQuickFound))
+                    var quick: [TextTracker.Found]
+                    if look.looksLike(lastQuickLook) {
+                        quick = readers!.quick.still(in: buffer)
+                    } else {
+                        lastQuickLook = look
+                        quick = try readers!.quick.read(texts, in: buffer)
+                    }
+                    // Quick readings miss small text, so careful ones count for as long as their text looks the same.
+                    onFrame(TextTracker.Frame(time: time, found: TextTracker.merge(readers!.careful.still(in: buffer), quick)))
                 }
             }
         }
@@ -656,43 +727,74 @@ enum TextFinder {
         return try result.get()
     }
 
-    // Each match in the top few readings of each line, so a misreading in the first one doesn't lose the text.
-    static func recognize(_ texts: [String], in buffer: CVPixelBuffer, level: VNRequestTextRecognitionLevel) throws -> [TextTracker.Found] {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = level
-        request.usesLanguageCorrection = false
-        try VNImageRequestHandler(cvPixelBuffer: buffer).perform([request])
+    // Each match in the top few readings of each line, so a misreading in the first one doesn't lose the text. With
+    // `tiles`, in pixels from the top left, Vision reads each of those parts of the frame on its own.
+    static func recognize(_ texts: [String], in buffer: CVPixelBuffer, level: VNRequestTextRecognitionLevel,
+                          tiles: [CGRect]? = nil) throws -> [TextTracker.Found] {
         guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { throw CocoaError(.fileReadUnknown) }
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        let frame = CVPixelBufferGetBaseAddress(buffer).flatMap { base in
-            CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA
-                ? TextLook.Frame(base: base, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), width: CVPixelBufferGetWidth(buffer),
-                                 height: CVPixelBufferGetHeight(buffer))
-                : nil
-        }
+        let width = Double(CVPixelBufferGetWidth(buffer)), height = Double(CVPixelBufferGetHeight(buffer))
+        let frame = TextLook.Frame(buffer)
         var found: [TextTracker.Found] = []
-        for observation in request.results ?? [] {
-            for candidate in observation.topCandidates(3) {
-                for text in texts {
-                    for (range, missing) in matches(of: text, in: candidate.string) {
-                        // Text read without a box of its own gets its whole line's.
-                        var box = (try? candidate.boundingBox(for: range))??.boundingBox ?? observation.boundingBox
-                        let character = box.width / Double(max(text.count - missing, 1))
-                        // A reading a character short may have dropped one that's still visible, on either side.
-                        if missing > 0 {
-                            box = box.insetBy(dx: -character * Double(missing), dy: 0)
+        // Tiles need a BGRA frame.
+        let whole = CGRect(x: 0, y: 0, width: width, height: height)
+        for tile in frame == nil ? [whole] : tiles ?? [whole] {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = level
+            request.usesLanguageCorrection = false
+            if let frame, tile != whole {
+                try VNImageRequestHandler(cvPixelBuffer: try frame.crop(tile)).perform([request])
+            } else {
+                try VNImageRequestHandler(cvPixelBuffer: buffer).perform([request])
+            }
+            var read: [TextTracker.Found] = []
+            for observation in request.results ?? [] {
+                for candidate in observation.topCandidates(3) {
+                    for text in texts {
+                        for (range, missing) in matches(of: text, in: candidate.string) {
+                            // Text read without a box of its own gets its whole line's.
+                            let within = (try? candidate.boundingBox(for: range))??.boundingBox ?? observation.boundingBox
+                            var box = CGRect(x: (tile.minX + within.minX * tile.width) / width,
+                                             y: (tile.minY + (1 - within.maxY) * tile.height) / height,
+                                             width: within.width * tile.width / width, height: within.height * tile.height / height)
+                            let character = box.width / Double(max(text.count - missing, 1))
+                            // A reading a character short may have dropped one that's still visible, on either side.
+                            if missing > 0 {
+                                box = box.insetBy(dx: -character * Double(missing), dy: 0)
+                            }
+                            if let frame {
+                                box = inked(box, in: frame, sideways: character * Double(missing + 1))
+                            }
+                            read = TextTracker.merge(read, [.init(text: text, box: box)])
                         }
-                        var flipped = CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
-                        if let frame {
-                            flipped = inked(flipped, in: frame, sideways: character * Double(missing + 1))
-                        }
-                        found = TextTracker.merge(found, [.init(text: text, box: flipped)])
                     }
                 }
             }
+            found = TextTracker.joined(found, read)
         }
         return found
     }
+
+    // Vision misses text under about 1% of the picture's longer side, so a frame is read in tiles no longer than
+    // `largestRead` or half its longer side. Each overlaps the next by a third or more, so every word is whole in one.
+    static func tiles(width: Int, height: Int) -> [CGRect] {
+        let most = max((max(width, height) + 1) / 2, largestRead)
+        func spans(_ length: Int) -> [(start: Int, size: Int)] {
+            guard length > most else { return [(0, length)] }
+            // Two tiles, each three fifths of the way, where that's small enough, or three halves.
+            let pair = (length * 3 + 4) / 5
+            let size = pair <= most ? pair : most
+            let starts = pair <= most ? [0, length - size] : [0, (length - size) / 2, length - size]
+            // Each starts on a multiple of 4 pixels, so the buffer Vision reads starts 16-byte aligned.
+            return starts.map { start in (start / 4 * 4, size + start % 4) }
+        }
+        return spans(height).flatMap { y in
+            spans(width).map { x in CGRect(x: x.start, y: y.start, width: x.size, height: y.size) }
+        }
+    }
+
+    // Tiles this long read 6-pixel print.
+    static let largestRead = 800
 
     // Careful readings box a word with half a space either side and room above and below, reaching toward the next word
     // or line. This trims blank edges, by at most `sideways` across and a third of the box up or down.
@@ -857,6 +959,230 @@ struct FrameLook {
         guard grid.count == other.grid.count else { return true }
         let changed = zip(grid, other.grid).filter { abs(Int($0) - Int($1)) > 24 }.count
         return changed * 50 > grid.count
+    }
+}
+
+// Readings of a frame, each kept for as long as the pixels under its text stay the same. It reads again only what
+// changed since it last read it, so a pointer moving over a page costs a small crop, not the page.
+struct ChangeReader {
+    let level: VNRequestTextRecognitionLevel
+    let tiles: [CGRect]
+    // The rectangles the last reading read, in pixels from the top left.
+    private(set) var lastRead: [CGRect] = []
+    private var kept: [(found: TextTracker.Found, look: Patch)] = []
+    // Each pixel's brightness when it was last read.
+    private var reference: [UInt8] = []
+
+    static let block = 32
+    // With more separate changes than this, it reads tiles instead, or the whole frame for a quick reading.
+    static let mostCrops = 4
+
+    init(level: VNRequestTextRecognitionLevel, tiles: [CGRect]) {
+        self.level = level
+        self.tiles = tiles
+    }
+
+    // Reads what changed since it last read it, and returns all that's showing: what this reading found, and what
+    // earlier ones found where nothing has changed.
+    // With `within`, as fractions of the frame, it reads only that part.
+    mutating func read(_ texts: [String], in buffer: CVPixelBuffer, within: CGRect? = nil) throws -> [TextTracker.Found] {
+        guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { throw CocoaError(.fileReadUnknown) }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let frame = TextLook.Frame(buffer) else {
+            lastRead = []
+            return try TextFinder.recognize(texts, in: buffer, level: level)
+        }
+        kept.removeAll { $0.look.changed(in: frame) }
+        lastRead = rectsToRead(in: frame, within: within.map { frame.pixels(of: $0) })
+        guard !lastRead.isEmpty else { return kept.map(\.found) }
+        let found = try TextFinder.recognize(texts, in: buffer, level: level, tiles: lastRead)
+        let before = kept
+        kept = TextTracker.joined(before.map(\.found), found).map { found in
+            before.first { $0.found == found } ?? (found, Patch(frame, frame.pixels(of: found.box)))
+        }
+        remember(lastRead, in: frame)
+        return kept.map(\.found)
+    }
+
+    // The readings whose text still looks as it did when read.
+    func still(in buffer: CVPixelBuffer) -> [TextTracker.Found] {
+        guard !kept.isEmpty, CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return [] }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let frame = TextLook.Frame(buffer) else { return [] }
+        return kept.filter { !$0.look.changed(in: frame) }.map(\.found)
+    }
+
+    // A crop around each separate change, wide enough to take in a word beside it. A change bigger than a tile needs
+    // the tiles it touches, as Vision misses small text in a bigger crop, but a quick reading reads the whole frame.
+    private func rectsToRead(in frame: TextLook.Frame, within: CGRect?) -> [CGRect] {
+        let whole = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
+        // The part of a rectangle to read, starting on a multiple of 4 pixels, as tiles do.
+        func part(_ rect: CGRect) -> CGRect? {
+            let part = rect.intersection(within ?? whole).integral.intersection(whole)
+            guard !part.isEmpty else { return nil }
+            let x = Double(Int(part.minX) / 4 * 4)
+            return CGRect(x: x, y: part.minY, width: part.maxX - x, height: part.height)
+        }
+        let regions = (reference.count == frame.width * frame.height ? changedRegions(in: frame) : [whole]).compactMap(part)
+        let widest = tiles.map(\.width).max() ?? whole.width, tallest = tiles.map(\.height).max() ?? whole.height
+        var crops = regions.filter { $0.width <= widest && $0.height <= tallest }
+        var big = regions.filter { $0.width > widest || $0.height > tallest }
+        if crops.count > Self.mostCrops {
+            big += crops
+            crops = []
+        }
+        if level == .fast, !big.isEmpty { return [whole] }
+        let touched = tiles.filter { tile in big.contains { $0.intersects(tile) } }.compactMap(part)
+        return touched + crops.filter { crop in !touched.contains { $0.contains(crop) } }
+    }
+
+    // Each group of changed squares, and the squares around it: 8% of the frame's width either side, and 3% of its
+    // height above and below.
+    private func changedRegions(in frame: TextLook.Frame) -> [CGRect] {
+        let size = Self.block
+        let columns = (frame.width + size - 1) / size, rows = (frame.height + size - 1) / size
+        var changed = [Bool](repeating: false, count: columns * rows)
+        reference.withUnsafeBufferPointer { old in
+            for row in 0..<rows {
+                for column in 0..<columns {
+                    changed[row * columns + column] = Self.differs(frame, old, x: column * size, y: row * size, size: size)
+                }
+            }
+        }
+        let across = max(1, Int(Double(frame.width) * 0.08) / size), down = max(1, Int(Double(frame.height) * 0.03) / size)
+        var near = [Bool](repeating: false, count: columns * rows)
+        for row in 0..<rows {
+            for column in 0..<columns where changed[row * columns + column] {
+                for r in max(0, row - down)...min(rows - 1, row + down) {
+                    for c in max(0, column - across)...min(columns - 1, column + across) {
+                        near[r * columns + c] = true
+                    }
+                }
+            }
+        }
+        // Groups of touching squares, each as the rectangle around it.
+        var regions: [CGRect] = []
+        var seen = [Bool](repeating: false, count: columns * rows)
+        for start in near.indices where near[start] && !seen[start] {
+            var left = columns, right = 0, top = rows, bottom = 0
+            var stack = [start]
+            seen[start] = true
+            while let index = stack.popLast() {
+                let row = index / columns, column = index % columns
+                left = min(left, column)
+                right = max(right, column)
+                top = min(top, row)
+                bottom = max(bottom, row)
+                for (r, c) in [(row - 1, column), (row + 1, column), (row, column - 1), (row, column + 1)]
+                where r >= 0 && r < rows && c >= 0 && c < columns && near[r * columns + c] && !seen[r * columns + c] {
+                    seen[r * columns + c] = true
+                    stack.append(r * columns + c)
+                }
+            }
+            let x = left * size, y = top * size
+            regions.append(CGRect(x: x, y: y, width: min((right + 1) * size, frame.width) - x, height: min((bottom + 1) * size, frame.height) - y))
+        }
+        return regions
+    }
+
+    // Whether any pixel in the square moved by more than 24 in brightness, which compression noise stays under.
+    private static func differs(_ frame: TextLook.Frame, _ old: UnsafeBufferPointer<UInt8>, x: Int, y: Int, size: Int) -> Bool {
+        let right = min(x + size, frame.width)
+        for row in y..<min(y + size, frame.height) {
+            let pixels = frame.base.advanced(by: row * frame.bytesPerRow).assumingMemoryBound(to: UInt8.self)
+            let start = row * frame.width
+            for column in x..<right where abs(Int(Patch.brightness(pixels + column * 4)) - Int(old[start + column])) > 24 {
+                return true
+            }
+        }
+        return false
+    }
+
+    private mutating func remember(_ rects: [CGRect], in frame: TextLook.Frame) {
+        if reference.count != frame.width * frame.height {
+            reference = [UInt8](repeating: 0, count: frame.width * frame.height)
+        }
+        reference.withUnsafeMutableBufferPointer { reference in
+            for rect in rects {
+                for row in Int(rect.minY)..<min(Int(rect.maxY), frame.height) {
+                    let pixels = frame.base.advanced(by: row * frame.bytesPerRow).assumingMemoryBound(to: UInt8.self)
+                    for column in Int(rect.minX)..<min(Int(rect.maxX), frame.width) {
+                        reference[row * frame.width + column] = Patch.brightness(pixels + column * 4)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The brightness of part of a frame, to tell when that part changes.
+struct Patch {
+    let x: Int, y: Int, width: Int, height: Int
+    private let brightness: [UInt8]
+
+    // `rect` is in pixels from the top left.
+    init(_ frame: TextLook.Frame, _ rect: CGRect) {
+        let clipped = rect.integral.intersection(CGRect(x: 0, y: 0, width: frame.width, height: frame.height))
+        x = clipped.isNull ? 0 : Int(clipped.minX)
+        y = clipped.isNull ? 0 : Int(clipped.minY)
+        width = clipped.isNull ? 0 : Int(clipped.width)
+        height = clipped.isNull ? 0 : Int(clipped.height)
+        var brightness: [UInt8] = []
+        brightness.reserveCapacity(width * height)
+        for row in y..<(y + height) {
+            let pixels = frame.base.advanced(by: row * frame.bytesPerRow + x * 4).assumingMemoryBound(to: UInt8.self)
+            for column in 0..<width {
+                brightness.append(Self.brightness(pixels + column * 4))
+            }
+        }
+        self.brightness = brightness
+    }
+
+    // Whether any pixel's brightness moved by more than `tolerance`, which compression noise stays under.
+    func changed(in frame: TextLook.Frame, tolerance: Int = 24) -> Bool {
+        guard x + width <= frame.width, y + height <= frame.height else { return true }
+        return brightness.withUnsafeBufferPointer { old in
+            for row in 0..<height {
+                let pixels = frame.base.advanced(by: (y + row) * frame.bytesPerRow + x * 4).assumingMemoryBound(to: UInt8.self)
+                let start = row * width
+                for column in 0..<width where abs(Int(Self.brightness(pixels + column * 4)) - Int(old[start + column])) > tolerance {
+                    return true
+                }
+            }
+            return false
+        }
+    }
+
+    // From BGRA.
+    static func brightness(_ pixel: UnsafePointer<UInt8>) -> UInt8 {
+        UInt8((Int(pixel[0]) + 2 * Int(pixel[1]) + Int(pixel[2])) / 4)
+    }
+}
+
+extension TextLook.Frame {
+    // A buffer that's locked for reading, if it's BGRA.
+    init?(_ buffer: CVPixelBuffer) {
+        guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA, let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        self.init(base: base, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), width: CVPixelBufferGetWidth(buffer),
+                  height: CVPixelBufferGetHeight(buffer))
+    }
+
+    // A box's pixels, a pixel wider each way, from the top left.
+    func pixels(of box: CGRect) -> CGRect {
+        CGRect(x: box.minX * Double(width), y: box.minY * Double(height), width: box.width * Double(width), height: box.height * Double(height))
+            .insetBy(dx: -1, dy: -1)
+    }
+
+    // Part of the frame as a buffer of its own. It shares the frame's memory, so the frame stays locked while Vision
+    // reads it.
+    func crop(_ rect: CGRect) throws -> CVPixelBuffer {
+        let x = max(Int(rect.minX), 0), y = max(Int(rect.minY), 0)
+        let width = min(Int(rect.maxX), self.width) - x, height = min(Int(rect.maxY), self.height) - y
+        var crop: CVPixelBuffer?
+        let status = CVPixelBufferCreateWithBytes(nil, width, height, kCVPixelFormatType_32BGRA, base + y * bytesPerRow + x * 4, bytesPerRow,
+                                                  nil, nil, nil, &crop)
+        guard status == kCVReturnSuccess, let crop else { throw CocoaError(.fileReadUnknown) }
+        return crop
     }
 }
 
