@@ -110,16 +110,37 @@ import Vision
         #expect(tracks.count == 1)
     }
 
-    // When a new message pushes the chat up, the old box stops where the text was once it shows up in its new place, and
-    // the new box starts only just before, enough to cover the text fading in.
+    // When a new message pushes the chat up, the box follows the text to its new place instead of staying behind.
     @Test func aBoxDoesntLingerWhereTheTextJumpedFrom() {
         let tracks = TextTracker.covering(TextTracker.tracks(for: "4242", in: frames([
             (2.0, [0.574]), (2.2, [0.574]), (2.34, [0.574]), (2.37, [0.416]), (2.5, [0.416]),
         ])))
+        #expect(tracks.count == 1)
+        #expect(tracks[0].box(at: 2.37)?.minY == 0.416)
+        #expect(tracks[0].box(at: 2.6)?.minY == 0.416)
+    }
+
+    // When the text turns up in another column, it's another place, and the old box stops at the jump.
+    @Test func textInAnotherColumnIsAnotherPlace() {
+        let found = [(2.0, 0.1, 0.574), (2.34, 0.1, 0.574), (2.37, 0.5, 0.416), (2.5, 0.5, 0.416)].map { time, x, y in
+            TextTracker.Frame(time: time, found: [.init(text: "4242", box: CGRect(x: x, y: y, width: 0.1, height: 0.05))])
+        }
+        let tracks = TextTracker.covering(TextTracker.tracks(for: "4242", in: found))
         #expect(tracks.count == 2)
         #expect(abs(tracks[0].end - 2.37) < 0.0001)
         #expect(abs(tracks[1].start - (2.37 - TextTrack.jumpLead)) < 0.0001)
-        #expect(tracks[0].box(at: 2.6) == nil)
+    }
+
+    // From a terminal scrolled with a mouse wheel, three lines a notch: two places, each jumping 0.146 of the frame at a
+    // time, and back. Each keeps one track, instead of leaving one behind at every line it stopped on.
+    @Test func textScrolledANotchAtATimeKeepsItsTrack() {
+        let steps = [0, 1, 2, 3, 2, 1, 0, 1, 2]
+        let readings = steps.enumerated().map { frame, step in
+            (Double(frame) / 30, [0.157 + 0.146 * Double(step), 0.01 + 0.146 * Double(step)])
+        }
+        let tracks = TextTracker.covering(TextTracker.tracks(for: "4242", in: frames(readings)))
+        #expect(tracks.count == 2)
+        #expect(tracks.allSatisfy { $0.sightings.count == steps.count })
     }
 
     // As when something sits over the text for a few seconds: the box stays through the gap.
@@ -229,6 +250,36 @@ import Vision
         #expect(original.contains { $0.contains("4242") })
         #expect(!after.contains { $0.contains("4242") || $0.contains("424") })
         #expect(after.contains { $0.contains("Order total") })
+    }
+
+    // A box drawn while the text goes unread stays only where the text is. Both top lines are read at the start and end
+    // of the clip, and the right one is gone in between, as when it scrolls away and back. The bottom line is read from
+    // frame 20, and before that it's there unread for five frames, after other words.
+    @Test func boxesAreOnlyDrawnWhereTheTextIs() async throws {
+        let folder = try TemporaryFolder()
+        let video = folder.file("held.mov")
+        try await makeTextVideo(video, frames: 40) { frame in
+            [("Card 4242", NSPoint(x: 100, y: 300)), (frame < 15 ? "Other words" : "Card 4242", NSPoint(x: 400, y: 100))]
+                + (frame < 10 || frame >= 35 ? [("Card 4242", NSPoint(x: 700, y: 300))] : [])
+        }
+        func track(_ x: Double, _ y: Double, _ frames: [Int]) -> TextTrack {
+            let box = CGRect(x: x / 1280, y: y / 720, width: 140 / 1280.0, height: 34 / 720.0)
+            return TextTrack(text: "4242", sightings: frames.map { .init(time: Double($0) / 20, box: box) })
+        }
+        let both = [0, 1, 2, 3, 4, 35, 36, 37, 38, 39]
+        let covered = folder.file("covered.mov")
+        try await TextCover.write(video, covering: [track(100, 386, both), track(700, 386, both), track(400, 586, Array(20..<40))],
+                                  to: covered)
+        let left = CGRect(x: 100, y: 386, width: 140, height: 34), right = left.offsetBy(dx: 600, dy: 0)
+        let bottom = CGRect(x: 400, y: 586, width: 140, height: 34)
+        // Unread but there: covered.
+        #expect(try brightness(of: covered, frame: 7, in: right) < 20)
+        #expect(try brightness(of: covered, frame: 20, in: left) < 20)
+        #expect(try brightness(of: covered, frame: 17, in: bottom) < 20)
+        // Not there: no box.
+        #expect(try brightness(of: covered, frame: 20, in: right) > 200)
+        #expect(try brightness(of: covered, frame: 12, in: bottom) > 200)
+        #expect(try brightness(of: covered, frame: 37, in: right) < 20)
     }
 
     // Waits for the background search to look through every clip.
@@ -444,6 +495,79 @@ private func makeScrollingChat(_ url: URL) async throws {
 }
 
 // Every line read in every frame, carefully.
+// A 1280×720 white video at 20 frames a second, with each frame's lines of black text drawn at points from the bottom left.
+private func makeTextVideo(_ url: URL, frames: Int, lines: (Int) -> [(String, NSPoint)]) async throws {
+    let width = 1280, height = 720
+    let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
+    ])
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height,
+    ])
+    writer.add(input)
+    writer.startWriting()
+    writer.startSession(atSourceTime: .zero)
+    let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 28), .foregroundColor: NSColor.black]
+    for frame in 0..<frames {
+        while !input.isReadyForMoreMediaData {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &buffer)
+        let pixels = buffer!
+        CVPixelBufferLockBaseAddress(pixels, [])
+        let context = CGContext(data: CVPixelBufferGetBaseAddress(pixels), width: width, height: height, bitsPerComponent: 8,
+                                bytesPerRow: CVPixelBufferGetBytesPerRow(pixels), space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        for (text, point) in lines(frame) {
+            NSAttributedString(string: text, attributes: attributes).draw(at: point)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        CVPixelBufferUnlockBaseAddress(pixels, [])
+        adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 20))
+    }
+    input.markAsFinished()
+    await writer.finishWriting()
+    if writer.status != .completed { throw writer.error ?? CocoaError(.fileWriteUnknown) }
+}
+
+// The average brightness, 0 to 255, of a rectangle measured from the top left, in one frame of a video.
+private func brightness(of url: URL, frame index: Int, in rect: CGRect) throws -> Double {
+    let asset = AVURLAsset(url: url)
+    let reader = try AVAssetReader(asset: asset)
+    let semaphore = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var track: AVAssetTrack?
+    asset.loadTracks(withMediaType: .video) { tracks, _ in
+        track = tracks?.first
+        semaphore.signal()
+    }
+    semaphore.wait()
+    let output = AVAssetReaderTrackOutput(track: track!, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+    reader.add(output)
+    reader.startReading()
+    for _ in 0..<index {
+        _ = output.copyNextSampleBuffer()
+    }
+    guard let sample = output.copyNextSampleBuffer(), let buffer = CMSampleBufferGetImageBuffer(sample) else { throw CocoaError(.fileReadCorruptFile) }
+    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+    let base = CVPixelBufferGetBaseAddress(buffer)!, bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
+    var total = 0.0
+    for y in Int(rect.minY)..<Int(rect.maxY) {
+        for x in Int(rect.minX)..<Int(rect.maxX) {
+            let pixel = base.advanced(by: y * bytesPerRow + x * 4).assumingMemoryBound(to: UInt8.self)
+            total += (Double(pixel[0]) + Double(pixel[1]) + Double(pixel[2])) / 3
+        }
+    }
+    return total / (rect.width * rect.height)
+}
+
 private func readText(_ url: URL) throws -> [String] {
     let asset = AVURLAsset(url: url)
     let reader = try AVAssetReader(asset: asset)

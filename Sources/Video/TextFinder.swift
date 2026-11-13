@@ -82,12 +82,31 @@ struct TextTrack: Hashable, Sendable, Codable {
         return steady
     }
 
+    // Whether the text was read in the frame at this time, rather than its box being held or carried along.
+    func isSighted(at time: Double) -> Bool {
+        let index = sightings.partitionIndex { $0.time >= time - 0.0005 }
+        return index < sightings.count && sightings[index].time <= time + 0.0005
+    }
+
     // Measured over at least a fifth of a second, since boxes found a frame apart jitter by a pixel or two. Without
-    // that much to go on, or when it's implausibly fast, the box holds still.
+    // that much to go on, or when it's implausibly fast or the text jumped on the way, the box holds still.
     func velocity(from index: Int, forward: Bool) -> CGVector {
         let anchor = sightings[index]
         let others = forward ? Array(sightings[(index + 1)...]) : sightings[..<index].reversed()
-        guard let other = others.first(where: { abs($0.time - anchor.time) >= 0.2 }) else { return .zero }
+        var previous = anchor
+        var reached: Sighting?
+        for other in others {
+            let seconds = abs(other.time - previous.time)
+            if seconds > 0, max(abs(other.box.minX - previous.box.minX), abs(other.box.minY - previous.box.minY)) / seconds > Self.maxSpeed {
+                return .zero
+            }
+            if abs(other.time - anchor.time) >= 0.2 {
+                reached = other
+                break
+            }
+            previous = other
+        }
+        guard let other = reached else { return .zero }
         let seconds = other.time - anchor.time
         let velocity = CGVector(dx: (other.box.minX - anchor.box.minX) / seconds, dy: (other.box.minY - anchor.box.minY) / seconds)
         return abs(velocity.dx) > Self.maxSpeed || abs(velocity.dy) > Self.maxSpeed ? .zero : velocity
@@ -152,6 +171,11 @@ enum TextTracker {
                 matchedTracks.insert(pair.track)
                 matchedReadings.insert(pair.reading)
             }
+            for (track, reading) in jumps(of: active, to: found, in: frame, matchedTracks: matchedTracks, matchedReadings: matchedReadings) {
+                active[track].sightings.append(.init(time: frame.time, box: found[reading].box))
+                matchedTracks.insert(track)
+                matchedReadings.insert(reading)
+            }
             var still: [TextTrack] = []
             for (index, track) in active.enumerated() {
                 if matchedTracks.contains(index) || frame.time - track.sightings[track.sightings.count - 1].time <= maxGap {
@@ -166,6 +190,34 @@ enum TextTracker {
             active = still
         }
         return (done + active).sorted { $0.sightings[0].time < $1.sightings[0].time }
+    }
+
+    // Text that jumps several lines at once, as a mouse wheel scrolls, is followed to an unclaimed reading in its column.
+    // When several tracks jump, the shift most of them share wins, since a scroll moves everything the same amount.
+    private static func jumps(of active: [TextTrack], to found: [Found], in frame: Frame, matchedTracks: Set<Int>,
+                              matchedReadings: Set<Int>) -> [(track: Int, reading: Int)] {
+        var candidates: [(track: Int, reading: Int, shift: Double)] = []
+        for (trackIndex, track) in active.enumerated() where !matchedTracks.contains(trackIndex) {
+            let last = track.sightings[track.sightings.count - 1]
+            guard frame.time - last.time <= TextTrack.lead else { continue }
+            for (readingIndex, reading) in found.enumerated()
+            where !matchedReadings.contains(readingIndex) && abs(reading.box.midX - last.box.midX) < 0.03 {
+                candidates.append((trackIndex, readingIndex, reading.box.midY - last.box.midY))
+            }
+        }
+        func support(_ shift: Double) -> Int {
+            candidates.filter { abs($0.shift - shift) < 0.01 }.count
+        }
+        guard let shift = candidates.map(\.shift).max(by: { (support($0), -abs($0)) < (support($1), -abs($1)) }) else { return [] }
+        var tracks: Set<Int> = [], readings: Set<Int> = []
+        var result: [(track: Int, reading: Int)] = []
+        for candidate in candidates.sorted(by: { abs($0.shift - shift) < abs($1.shift - shift) })
+        where abs(candidate.shift - shift) < 0.01 && !tracks.contains(candidate.track) && !readings.contains(candidate.reading) {
+            result.append((candidate.track, candidate.reading))
+            tracks.insert(candidate.track)
+            readings.insert(candidate.reading)
+        }
+        return result
     }
 
     // The tracks to cover once re-reading is done. One that picks up in the same place within `recheckGap` is joined
