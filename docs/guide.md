@@ -144,7 +144,8 @@ Title cards aren't files, so they don't survive **Clear Session**.
 ## Redacting text
 
 To redact something from the video, such as the last four digits of a card, click **Redact Text…** in the list header
-(or choose it in the Edit menu). A small sheet opens. Type the text and click **Add** (or press Return). Pasting several
+(or choose it in the Edit menu). The start screen has a **Redact Text…** button too, so you can set it up before you
+record. A small sheet opens. Type the text and click **Add** (or press Return). Pasting several
 lines adds each one. Screen Stitch then looks through every clip for it, even as the page scrolls, and covers each place
 it finds with a solid black box when you combine.
 
@@ -153,9 +154,12 @@ see what was under it. Your original recordings are unchanged, so share only the
 
 The sheet lists your text with a checkbox on each. A checked entry is redacted, and the status beside it says how often
 it was found. Uncheck an entry to stop redacting it for now, or click ⓧ (**Stop Redacting**) to remove it. Screen Stitch
-remembers the list between sessions, so **Redact Text…** is filled in while anything is checked. The bottom bar shows
+remembers the list between sessions, so **Redact Text…** is filled in while redaction is on and anything is checked. The bottom bar shows
 what's redacted, for example "Redacting 9611 and 9820 · Looking through clip 2 of 5…", with **Change…** to reopen the
 sheet.
+
+The switch at the top right of the sheet turns redaction on or off. Off keeps your list but redacts nothing, and the
+list turns grey. **Clear List…** at the bottom left removes every entry, after asking first.
 
 The search runs by itself in the background, one clip at a time. It takes about half a minute per minute of video, so
 about 10 minutes for 20 minutes, and short clips are quick. It pauses while you record and carries on afterwards, without
@@ -178,6 +182,8 @@ you add text after saving, the card is replaced by the compact **Saved** line, w
 “4242”. Combine again to redact it."
 
 - Type the text as it appears on screen. Capital letters don't matter.
+- Text needs at least 2 characters. Text under 4 characters matches only as a separate word, so "MN" covers "MN 55407"
+  but not the letters inside "column". A letter next to a digit still counts as the edge of a word, so "MN55407" matches.
 - Very small text, such as inside a scaled-down picture of another screen, can't be read reliably, so it may not be
   found.
 - Text in rotated video can't be found yet. Screen Stitch says so instead of skipping the clip.

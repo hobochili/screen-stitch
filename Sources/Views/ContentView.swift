@@ -122,8 +122,8 @@ struct ContentView: View {
     }
 }
 
-// Recording is the main use, so it gets the one big button. Adding videos is a plain button, and where recordings go is
-// a quiet footer. Watch for Recordings is in the File menu.
+// Recording is the main use, so it gets the one big button. Adding videos and Redact Text are plain buttons, and where
+// recordings go is a quiet footer. Watch for Recordings is in the File menu.
 struct EmptyStateView: View {
     @Environment(StitchModel.self) private var model
 
@@ -169,10 +169,14 @@ struct EmptyStateView: View {
             .padding(.top, 40)
             .padding(.bottom, 16)
 
-            Button { model.chooseFiles() } label: {
-                Label("Add Videos…", systemImage: "plus")
+            HStack(spacing: 12) {
+                Button { model.chooseFiles() } label: {
+                    Label("Add Videos…", systemImage: "plus")
+                }
+                .help("Add existing video files")
+                // Set up before recording, so the first clips are searched as they come in.
+                HideTextButton()
             }
-            .help("Add existing video files")
             .controlSize(.large)
             Text("You can also drop video files anywhere in this window.")
                 .font(.caption)

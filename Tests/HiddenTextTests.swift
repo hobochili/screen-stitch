@@ -176,6 +176,19 @@ import Vision
         // Short text could match too much by being one character off.
         #expect(TextFinder.matches(of: "and", in: "end and").count == 1)
     }
+
+    // Short text matches only as a word of its own, but a letter next to a digit is still a word's edge.
+    @Test func shortTextMatchesOnlyOnItsOwn() {
+        func found(_ text: String, _ line: String) -> [String] {
+            TextFinder.matches(of: text, in: line).map { String(line[$0.0]) }
+        }
+        #expect(found("MN", "Minneapolis, MN 55407") == ["MN"])
+        #expect(found("MN", "Add a column") == [])
+        #expect(found("MN", "MN55407") == ["MN"])
+        #expect(found("534", "CVV534") == ["534"])
+        #expect(found("534", "Order 15340") == [])
+        #expect(found("9611", "x96112") == ["9611"])
+    }
 }
 
 @Suite struct TextFinderTests {
@@ -293,8 +306,8 @@ import Vision
 
     @Test func eachLineIsItsOwnEntryAndShortOnesAreRefused() {
         let model = StitchModel()
-        #expect(model.addHiddenText("ab") == "Type at least 3 characters.")
-        #expect(model.addHiddenText("9611\n 9820 \nab\n") == nil)
+        #expect(model.addHiddenText("a") == "Type at least 2 characters.")
+        #expect(model.addHiddenText("9611\n 9820 \na\n") == nil)
         #expect(model.hiddenText.map(\.text) == ["9611", "9820"])
         model.setHiddenText("9611", isOn: false)
         #expect(model.activeHiddenText == ["9820"])
@@ -505,5 +518,20 @@ private func readText(_ url: URL) throws -> [String] {
         worker.waitUntilExit()
         #expect(Date().timeIntervalSince(started) < 5)
         #expect(worker.terminationReason == .uncaughtSignal)
+    }
+}
+
+@MainActor
+@Suite struct RedactSwitchTests {
+    @Test func turningRedactionOffKeepsTheListButRedactsNothing() {
+        let model = StitchModel()
+        model.addHiddenText("9611\nStephens")
+        model.redactsText = false
+        #expect(model.activeHiddenText.isEmpty)
+        #expect(model.hiddenText.map(\.text) == ["9611", "Stephens"])
+        model.redactsText = true
+        #expect(model.activeHiddenText == ["9611", "Stephens"])
+        model.clearHiddenText()
+        #expect(model.hiddenText.isEmpty)
     }
 }

@@ -565,13 +565,17 @@ enum TextFinder {
                 // A frame showing when a stretch starts belongs to the stretch before.
                 guard time >= start, time < end, let buffer = CMSampleBufferGetImageBuffer(sample) else { return }
                 if let only, !only.contains(time) { return }
-                guard pass == .sampled else {
-                    onFrame(TextTracker.Frame(time: time, found: try recognize(texts, in: buffer, level: .accurate), careful: true))
-                    return
-                }
                 // A picture that hasn't visibly changed since a reading reads the same, so that reading is reused. Each frame
                 // is compared with the frame that was read, not the one before, so a slow fade can't creep past.
                 let look = FrameLook(buffer)
+                guard pass == .sampled else {
+                    if !look.looksLike(lastCarefulLook) {
+                        lastCarefulLook = look
+                        lastCarefulFound = try recognize(texts, in: buffer, level: .accurate)
+                    }
+                    onFrame(TextTracker.Frame(time: time, found: lastCarefulFound, careful: true))
+                    return
+                }
                 if look.looksLike(lastCarefulLook) {
                     onFrame(TextTracker.Frame(time: time, found: lastCarefulFound, careful: true))
                 } else if time - lastCareful >= carefulInterval || (time - lastCareful >= changeInterval && look.differsMuch(from: lastCarefulLook)) {
@@ -638,10 +642,20 @@ enum TextFinder {
         let target = text.map(normalized)
         var result: [(Range<String.Index>, missing: Int)] = []
         var covered: [Range<Int>] = []
+        // Text under four characters, such as "MN", matches only where it isn't part of a longer word, or it would cover
+        // pieces of words all over the screen. A letter next to a digit still counts as a word's edge.
+        func separate(_ start: Int, _ end: Int) -> Bool {
+            guard text.count < 4 else { return true }
+            func sameKind(_ a: Character, _ b: Character) -> Bool {
+                (a.isLetter && b.isLetter) || (a.isNumber && b.isNumber)
+            }
+            let first = characters[start], last = characters[end - 1]
+            return (start == 0 || !sameKind(characters[start - 1], first)) && (end == characters.count || !sameKind(characters[end], last))
+        }
         if !target.isEmpty, normal.count >= target.count {
             var i = 0
             while i <= normal.count - target.count {
-                if Array(normal[i..<(i + target.count)]) == target {
+                if Array(normal[i..<(i + target.count)]) == target, separate(i, i + target.count) {
                     result.append((indices[i]..<indices[i + target.count], 0))
                     covered.append(i..<(i + target.count))
                     i += target.count

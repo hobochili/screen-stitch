@@ -169,6 +169,16 @@ final class StitchModel {
             scheduleSearchUpdate()
         }
     }
+    // Off keeps the list for another session but redacts nothing.
+    var redactsText = StitchModel.hiddenTextDefaults?.object(forKey: "redactsText") as? Bool ?? true {
+        didSet {
+            StitchModel.hiddenTextDefaults?.set(redactsText, forKey: "redactsText")
+            clearResult()
+            textSearches.values.forEach { $0.forgetFailure() }
+            scheduleSearchUpdate()
+        }
+    }
+    var confirmsClearHiddenText = false
     // Searches for hidden text, by clip file.
     var textSearches: [URL: TextSearch] = [:]
     // What each saved video hid, so it can be checked, and the ones that have been.

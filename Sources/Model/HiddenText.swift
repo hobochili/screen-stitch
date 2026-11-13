@@ -221,15 +221,19 @@ extension StitchModel {
     }
 
     var activeHiddenText: [String] {
-        hiddenText.filter(\.isOn).map(\.text)
+        redactsText ? hiddenText.filter(\.isOn).map(\.text) : []
+    }
+
+    func clearHiddenText() {
+        hiddenText = []
     }
 
     // Adds each line as its own entry. Returns why nothing was added, if it wasn't.
     @discardableResult
     func addHiddenText(_ input: String) -> String? {
         let lines = input.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        let usable = lines.filter { $0.count >= 3 }
-        guard !usable.isEmpty else { return lines.isEmpty ? nil : "Type at least 3 characters." }
+        let usable = lines.filter { $0.count >= 2 }
+        guard !usable.isEmpty else { return lines.isEmpty ? nil : "Type at least 2 characters." }
         for text in usable {
             if let index = hiddenText.firstIndex(where: { $0.text.caseInsensitiveCompare(text) == .orderedSame }) {
                 hiddenText[index].isOn = true
@@ -329,7 +333,7 @@ extension StitchModel {
 
     // How often one entry was found across the clips, or nil before there's anything to say.
     func hiddenTextStatus(_ entry: HiddenTextEntry) -> String? {
-        guard entry.isOn, !clips.isEmpty else { return nil }
+        guard redactsText, entry.isOn, !clips.isEmpty else { return nil }
         if clips.contains(where: { textSearches[$0.url]?.found[entry.text] == nil && textSearches[$0.url]?.failure == nil }) {
             return "Looking…"
         }

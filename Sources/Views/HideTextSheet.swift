@@ -9,19 +9,26 @@ struct HideTextListSheet: View {
         @Bindable var model = model
         let lines = model.hiddenTextDraft.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        let canAdd = lines.contains { $0.count >= 3 }
+        let canAdd = lines.contains { $0.count >= 2 }
         // Return adds what's typed, and closes the sheet once the field is empty.
         let addKey: KeyboardShortcut? = canAdd ? KeyboardShortcut.defaultAction : nil
         let doneKey: KeyboardShortcut? = canAdd ? nil : KeyboardShortcut.defaultAction
-        let hint: String = !lines.isEmpty && !canAdd ? "Type at least 3 characters." : "Type it as it appears on screen. Capital letters don't matter."
+        let hint: String = !lines.isEmpty && !canAdd ? "Type at least 2 characters." : "Type it as it appears on screen. Capital letters don't matter."
         let add = {
             if model.addHiddenText(model.hiddenTextDraft) == nil {
                 model.hiddenTextDraft = ""
             }
         }
         VStack(alignment: .leading, spacing: 12) {
-            Text("Redact Text in the Video")
-                .font(.headline)
+            HStack {
+                Text("Redact Text in the Video")
+                    .font(.headline)
+                Spacer()
+                Toggle("Redact Text", isOn: $model.redactsText)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .help(model.redactsText ? "Turn off to keep the list but stop redacting" : "Turn on to redact the checked text")
+            }
             Text("Type text to redact from the video, such as the last four digits of a card. A black box covers it everywhere it appears, in every clip. You can't remove the boxes from the saved video.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -47,11 +54,17 @@ struct HideTextListSheet: View {
                 }
                 .listStyle(.bordered(alternatesRowBackgrounds: false))
                 .frame(minHeight: 90, maxHeight: 220)
-                Text("Screen Stitch remembers this list. Uncheck text to stop redacting it for now.")
+                .disabled(!model.redactsText)
+                Text(model.redactsText
+                    ? "Screen Stitch remembers this list. Uncheck text to stop redacting it for now."
+                    : "Redact Text is off. Your list is kept for next time.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             HStack {
+                if !model.hiddenText.isEmpty {
+                    Button("Clear List…") { model.confirmsClearHiddenText = true }
+                }
                 Spacer()
                 Button("Done") { model.showsHideTextList = false }
                     .keyboardShortcut(doneKey)
@@ -59,6 +72,12 @@ struct HideTextListSheet: View {
         }
         .padding(20)
         .frame(width: 440)
+        .confirmationDialog("Clear the Redact Text list?", isPresented: $model.confirmsClearHiddenText) {
+            Button("Clear List", role: .destructive) { model.clearHiddenText() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(model.hiddenText.count == 1 ? "This removes the only entry." : "This removes all \(model.hiddenText.count) entries.")
+        }
     }
 }
 
